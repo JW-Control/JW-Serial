@@ -11,7 +11,8 @@ const createDefaultChannels = (count) =>
 const createPlot = (index) => ({
   id: `plot-${index}`,
   title: `Plot ${index}`,
-  assignments: []
+  assignments: [],
+  height: 320
 });
 
 const defaultPlots = [createPlot(1), createPlot(2)];
@@ -71,7 +72,40 @@ const makeTicks = (minValue, maxValue, targetTicks = 6) => {
     ticks.push(Number((start + step).toFixed(6)));
   }
 
-  return { ticks, min, max: safeMax };
+  return { ticks, min, max: safeMax, step };
+};
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const normalizeAxisRange = (minValue, maxValue) => {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return { min: 0, max: 1 };
+  }
+
+  if (minValue === maxValue) {
+    const pad = Math.max(Math.abs(minValue) * 0.08, 1);
+    return { min: minValue - pad, max: maxValue + pad };
+  }
+
+  const span = maxValue - minValue;
+  const pad = span * 0.12;
+  return { min: minValue - pad, max: maxValue + pad };
+};
+
+const formatTick = (value, step) => {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  if (step >= 100) {
+    return Math.round(value).toString();
+  }
+  if (step >= 1) {
+    return value.toFixed(1).replace(/\.0$/, "");
+  }
+  if (step >= 0.1) {
+    return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 };
 
 const buildSeries = (
@@ -127,7 +161,9 @@ export default function App() {
   const [configMessage, setConfigMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
+  const [sizeMenu, setSizeMenu] = useState(null);
   const menuRef = useRef(null);
+  const sizeMenuRef = useRef(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -194,9 +230,24 @@ export default function App() {
     setContextMenu(null);
   };
 
+  const closeSizeMenu = () => {
+    setSizeMenu(null);
+  };
+
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
+    setSizeMenu(null);
     setContextMenu({
+      plotId,
+      x: event.clientX,
+      y: event.clientY
+    });
+  };
+
+  const openSizeMenu = (event, plotId) => {
+    event.preventDefault();
+    setContextMenu(null);
+    setSizeMenu({
       plotId,
       x: event.clientX,
       y: event.clientY
@@ -209,6 +260,13 @@ export default function App() {
 
   const removePlot = () => {
     setPlots((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+  };
+
+  const updatePlotHeight = (plotId, nextHeight) => {
+    const height = clamp(Number(nextHeight) || 320, 240, 560);
+    setPlots((prev) =>
+      prev.map((plot) => (plot.id === plotId ? { ...plot, height } : plot))
+    );
   };
 
   const addAssignment = (plotId, channelId) => {
@@ -514,26 +572,30 @@ export default function App() {
   }, [modal]);
 
   useEffect(() => {
-    if (!contextMenu) {
+    if (!contextMenu && !sizeMenu) {
       return undefined;
     }
 
     const close = (event) => {
-      if (menuRef.current?.contains(event.target)) {
+      if (menuRef.current?.contains(event.target) || sizeMenuRef.current?.contains(event.target)) {
         return;
       }
       setContextMenu(null);
+      setSizeMenu(null);
     };
 
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
-  }, [contextMenu]);
+  }, [contextMenu, sizeMenu]);
 
   const renderPlot = (plot) => {
     const samples = historyRef.current.slice(-600);
     const width = 1000;
     const height = 280;
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
+    const chartHeight = Math.max(120, (plot.height || 320) - 90);
+    const yTargetTicks = clamp(Math.round(chartHeight / 56), 3, 7);
+    const xTargetTicks = clamp(Math.round(width / 140), 5, 9);
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -572,12 +634,18 @@ export default function App() {
       });
     });
 
-    const y1TicksData = makeTicks(axisStats.y1.min, axisStats.y1.max, 6);
-    const y2TicksData = Number.isFinite(axisStats.y2.min)
-      ? makeTicks(axisStats.y2.min, axisStats.y2.max, 6)
-      : y1TicksData;
+    const y1Range = normalizeAxisRange(axisStats.y1.min, axisStats.y1.max);
+    const y2Range = Number.isFinite(axisStats.y2.min)
+      ? normalizeAxisRange(axisStats.y2.min, axisStats.y2.max)
+      : y1Range;
 
-    const xTicksData = makeTicks(Math.min(...xValues), Math.max(...xValues), 8);
+    const y1TicksData = makeTicks(y1Range.min, y1Range.max, yTargetTicks);
+    const y2TicksData = makeTicks(y2Range.min, y2Range.max, yTargetTicks);
+
+    const xMin = Math.min(...xValues);
+    const xMax = Math.max(...xValues);
+    const xRange = normalizeAxisRange(xMin, xMax);
+    const xTicksData = makeTicks(xRange.min, xRange.max, xTargetTicks);
 
     const yTickToPx = (value, ticksData) => {
       const ratio = (value - ticksData.min) / (ticksData.max - ticksData.min || 1);
@@ -631,7 +699,7 @@ export default function App() {
       .filter(Boolean);
 
     return (
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
         <line
           x1={padding.left}
@@ -677,7 +745,7 @@ export default function App() {
                 fontSize="10"
                 fill="#64748b"
               >
-                {Number(tick.toFixed(2))}
+                {formatTick(tick, xTicksData.step)}
               </text>
             </g>
           );
@@ -702,7 +770,7 @@ export default function App() {
                 fontSize="10"
                 fill="#64748b"
               >
-                {Number(tick.toFixed(2))}
+                {formatTick(tick, y1TicksData.step)}
               </text>
             </g>
           );
@@ -719,7 +787,7 @@ export default function App() {
               fontSize="10"
               fill="#64748b"
             >
-              {Number(tick.toFixed(2))}
+              {formatTick(tick, y2TicksData.step)}
             </text>
           );
         })}
@@ -890,7 +958,7 @@ export default function App() {
                 (item) => `${item.channelId}:${item.axis}`
               );
               return (
-                <section className="plot" key={plot.id}>
+                <section className="plot" key={plot.id} style={{ height: `${plot.height || 320}px` }}>
                   <header className="plot__header">
                     <h3>{plot.title}</h3>
                     <div className="plot__legend">
@@ -906,9 +974,36 @@ export default function App() {
                   <div
                     className="plot__canvas"
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
+                    onClick={(event) => openSizeMenu(event, plot.id)}
                   >
                     {renderPlot(plot)}
                   </div>
+
+
+
+                  {sizeMenu?.plotId === plot.id ? (
+                    <div
+                      ref={sizeMenuRef}
+                      className="plot-size-menu"
+                      style={{ left: sizeMenu.x, top: sizeMenu.y }}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <strong>Alto del plot</strong>
+                      <input
+                        type="range"
+                        min="240"
+                        max="560"
+                        step="10"
+                        value={plot.height || 320}
+                        onChange={(event) => updatePlotHeight(plot.id, event.target.value)}
+                      />
+                      <span>{plot.height || 320}px</span>
+                      <button type="button" onClick={closeSizeMenu}>
+                        Cerrar
+                      </button>
+                    </div>
+                  ) : null}
 
                   {contextMenu?.plotId === plot.id ? (
                     <div

@@ -241,8 +241,6 @@ input {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 320px;
-  max-height: 360px;
 }
 
 .plot__header {
@@ -274,7 +272,8 @@ input {
 }
 .plot__canvas {
   flex: 1;
-  min-height: 230px;
+  min-height: 140px;
+  cursor: ns-resize;
   border-radius: 10px;
   border: 1px dashed #cbd5f5;
   display: flex;
@@ -285,6 +284,40 @@ input {
   position: relative;
   overflow: hidden;
 }
+
+
+.plot-size-menu {
+  position: fixed;
+  z-index: 52;
+  width: 220px;
+  background: #ffffff;
+  border: 1px solid #cbd5f5;
+  border-radius: 10px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.2);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.plot-size-menu input[type="range"] {
+  width: 100%;
+}
+
+.plot-size-menu span {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.plot-size-menu button {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 
 .plot-menu {
   position: fixed;
