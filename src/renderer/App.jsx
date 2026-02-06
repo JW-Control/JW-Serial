@@ -161,9 +161,8 @@ export default function App() {
   const [configMessage, setConfigMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
-  const [sizeMenu, setSizeMenu] = useState(null);
+  const [plotResize, setPlotResize] = useState(null);
   const menuRef = useRef(null);
-  const sizeMenuRef = useRef(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -230,24 +229,10 @@ export default function App() {
     setContextMenu(null);
   };
 
-  const closeSizeMenu = () => {
-    setSizeMenu(null);
-  };
 
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
-    setSizeMenu(null);
     setContextMenu({
-      plotId,
-      x: event.clientX,
-      y: event.clientY
-    });
-  };
-
-  const openSizeMenu = (event, plotId) => {
-    event.preventDefault();
-    setContextMenu(null);
-    setSizeMenu({
       plotId,
       x: event.clientX,
       y: event.clientY
@@ -267,6 +252,16 @@ export default function App() {
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, height } : plot))
     );
+  };
+
+  const startResize = (event, plotId, currentHeight) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setPlotResize({
+      plotId,
+      startY: event.clientY,
+      startHeight: currentHeight || 320
+    });
   };
 
   const addAssignment = (plotId, channelId) => {
@@ -572,24 +567,43 @@ export default function App() {
   }, [modal]);
 
   useEffect(() => {
-    if (!contextMenu && !sizeMenu) {
+    if (!contextMenu) {
       return undefined;
     }
 
     const close = (event) => {
-      if (menuRef.current?.contains(event.target) || sizeMenuRef.current?.contains(event.target)) {
+      if (menuRef.current?.contains(event.target)) {
         return;
       }
       setContextMenu(null);
-      setSizeMenu(null);
     };
 
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
-  }, [contextMenu, sizeMenu]);
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!plotResize) {
+      return undefined;
+    }
+
+    const onMove = (event) => {
+      const delta = event.clientY - plotResize.startY;
+      updatePlotHeight(plotResize.plotId, plotResize.startHeight + delta);
+    };
+
+    const onUp = () => setPlotResize(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [plotResize]);
 
   const renderPlot = (plot) => {
-    const samples = historyRef.current.slice(-600);
+    const samples = historyRef.current;
     const width = 1000;
     const height = 280;
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
@@ -699,7 +713,7 @@ export default function App() {
       .filter(Boolean);
 
     return (
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
         <line
           x1={padding.left}
@@ -974,36 +988,21 @@ export default function App() {
                   <div
                     className="plot__canvas"
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
-                    onClick={(event) => openSizeMenu(event, plot.id)}
                   >
                     {renderPlot(plot)}
                   </div>
 
+                  <button
+                    type="button"
+                    className="plot__resize-handle"
+                    onPointerDown={(event) => startResize(event, plot.id, plot.height)}
+                    aria-label="Resize plot vertically"
+                    title="Arrastra para cambiar altura"
+                  >
+                    ↕
+                  </button>
 
 
-                  {sizeMenu?.plotId === plot.id ? (
-                    <div
-                      ref={sizeMenuRef}
-                      className="plot-size-menu"
-                      style={{ left: sizeMenu.x, top: sizeMenu.y }}
-                      onClick={(event) => event.stopPropagation()}
-                      onPointerDown={(event) => event.stopPropagation()}
-                    >
-                      <strong>Alto del plot</strong>
-                      <input
-                        type="range"
-                        min="240"
-                        max="560"
-                        step="10"
-                        value={plot.height || 320}
-                        onChange={(event) => updatePlotHeight(plot.id, event.target.value)}
-                      />
-                      <span>{plot.height || 320}px</span>
-                      <button type="button" onClick={closeSizeMenu}>
-                        Cerrar
-                      </button>
-                    </div>
-                  ) : null}
 
                   {contextMenu?.plotId === plot.id ? (
                     <div
