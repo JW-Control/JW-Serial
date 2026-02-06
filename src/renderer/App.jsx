@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const defaultChannels = Array.from({ length: 10 }, (_, index) => ({
   id: `val${index}`,
@@ -27,6 +27,10 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [terminator, setTerminator] = useState("none");
   const [monitorMessage, setMonitorMessage] = useState("");
+  const [ports, setPorts] = useState([]);
+  const [selectedPort, setSelectedPort] = useState("");
+  const [baudRate, setBaudRate] = useState(115200);
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
 
   const addPlot = () => {
     setPlots((prev) => [
@@ -55,8 +59,64 @@ export default function App() {
     if (!monitorMessage.trim()) {
       return;
     }
+    const suffix =
+      terminator === "nl"
+        ? "\n"
+        : terminator === "cr"
+          ? "\r"
+          : terminator === "nlcr"
+            ? "\n\r"
+            : "";
+    window.jwSerial?.sendMessage?.(`${monitorMessage}${suffix}`);
     setMonitorMessage("");
   };
+
+  const refreshPorts = async () => {
+    if (!window.jwSerial?.listPorts) {
+      setPorts([]);
+      return;
+    }
+    try {
+      const nextPorts = await window.jwSerial.listPorts();
+      setPorts(nextPorts);
+      if (!selectedPort && nextPorts.length > 0) {
+        setSelectedPort(nextPorts[0].path);
+      }
+    } catch (error) {
+      setPorts([]);
+    }
+  };
+
+  const handleConnect = async () => {
+    if (!window.jwSerial?.openPort || !selectedPort) {
+      return;
+    }
+    try {
+      setConnectionStatus("connecting");
+      await window.jwSerial.openPort({
+        path: selectedPort,
+        baudRate,
+        dataBits: 8,
+        parity: "none",
+        stopBits: 1
+      });
+      setConnectionStatus("connected");
+    } catch (error) {
+      setConnectionStatus("error");
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!window.jwSerial?.closePort) {
+      return;
+    }
+    await window.jwSerial.closePort();
+    setConnectionStatus("disconnected");
+  };
+
+  useEffect(() => {
+    refreshPorts();
+  }, []);
 
   return (
     <div className="app">
@@ -65,68 +125,101 @@ export default function App() {
           <h1>JW-Serial</h1>
           <p>MVP · Windows</p>
         </header>
+        <div className="sidebar__content">
+          <section className="sidebar__section">
+            <h2>Conexión</h2>
+            <label className="field">
+              Puerto
+              <select
+                value={selectedPort}
+                onChange={(event) => setSelectedPort(event.target.value)}
+              >
+                {ports.length === 0 ? (
+                  <option value="">Sin puertos</option>
+                ) : (
+                  ports.map((port) => (
+                    <option key={port.path} value={port.path}>
+                      {port.path}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label className="field">
+              Baudrate
+              <select
+                value={baudRate}
+                onChange={(event) => setBaudRate(Number(event.target.value))}
+              >
+                <option value={9600}>9600</option>
+                <option value={115200}>115200</option>
+                <option value={230400}>230400</option>
+              </select>
+            </label>
+            <div className="connection-actions">
+              <button type="button" onClick={refreshPorts}>
+                Refrescar
+              </button>
+              {connectionStatus === "connected" ? (
+                <button type="button" onClick={handleDisconnect}>
+                  Desconectar
+                </button>
+              ) : (
+                <button type="button" onClick={handleConnect}>
+                  Conectar
+                </button>
+              )}
+            </div>
+            <p className="connection-status">
+              Estado: {connectionStatus}
+            </p>
+          </section>
 
-        <section className="sidebar__section">
-          <h2>Conexión</h2>
-          <label className="field">
-            Puerto
-            <select>
-              <option>COM3</option>
-              <option>COM4</option>
-            </select>
-          </label>
-          <label className="field">
-            Baudrate
-            <select>
-              <option>9600</option>
-              <option>115200</option>
-              <option>230400</option>
-            </select>
-          </label>
-        </section>
+          <section className="sidebar__section">
+            <h2>Variables</h2>
+            <div className="channel-table">
+              {channels.map((channel) => (
+                <div className="channel-row" key={channel.id}>
+                  <span
+                    className="channel-color"
+                    style={{ backgroundColor: channel.color }}
+                  />
+                  <span className="channel-name">{channel.name}</span>
+                  <span className="channel-value">
+                    {channel.value.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
 
-        <section className="sidebar__section">
-          <h2>Variables</h2>
-          <div className="channel-table">
-            {channels.map((channel) => (
-              <div className="channel-row" key={channel.id}>
-                <span
-                  className="channel-color"
-                  style={{ backgroundColor: channel.color }}
-                />
-                <span className="channel-name">{channel.name}</span>
-                <span className="channel-value">{channel.value.toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="sidebar__section">
-          <h2>Acciones</h2>
-          <div className="actions">
-            <button type="button" onClick={() => handleAction("basic")}>
-              Configuración básica
-            </button>
-            <button type="button" onClick={() => handleAction("advanced")}>
-              Configuración avanzada
-            </button>
-            <button type="button" onClick={() => handleAction("pause")}>
-              Pausar
-            </button>
-            <button type="button" onClick={() => handleAction("clear")}>
-              Limpiar buffer
-            </button>
-            <button type="button" onClick={() => handleAction("export")}>
-              Exportar CSV
-            </button>
-            <button type="button" onClick={() => handleAction("save")}>
-              Guardar configuración
-            </button>
-            <button type="button" onClick={() => handleAction("load")}>
-              Cargar configuración
-            </button>
-          </div>
-        </section>
+          <section className="sidebar__section">
+            <h2>Acciones</h2>
+            <div className="actions">
+              <button type="button" onClick={() => handleAction("basic")}>
+                Configuración básica
+              </button>
+              <button type="button" onClick={() => handleAction("advanced")}>
+                Configuración avanzada
+              </button>
+              <button type="button" onClick={() => handleAction("pause")}>
+                Pausar
+              </button>
+              <button type="button" onClick={() => handleAction("clear")}>
+                Limpiar buffer
+              </button>
+              <button type="button" onClick={() => handleAction("export")}>
+                Exportar CSV
+              </button>
+              <button type="button" onClick={() => handleAction("save")}>
+                Guardar configuración
+              </button>
+              <button type="button" onClick={() => handleAction("load")}>
+                Cargar configuración
+              </button>
+            </div>
+          </section>
+        </div>
       </aside>
 
       <main className="main">
