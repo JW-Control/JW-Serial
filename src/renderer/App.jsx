@@ -127,6 +127,7 @@ export default function App() {
   const [configMessage, setConfigMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
+  const menuRef = useRef(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -175,7 +176,6 @@ export default function App() {
 
   const getDraft = (plotId) =>
     plotDrafts[plotId] || {
-      channelId: visibleChannels[0]?.id || "val0",
       axis: "y1",
       removeKey: ""
     };
@@ -211,12 +211,12 @@ export default function App() {
     setPlots((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
   };
 
-  const addAssignment = (plotId) => {
+  const addAssignment = (plotId, channelId) => {
     const draft = getDraft(plotId);
-    if (!draft.channelId) {
+    if (!channelId) {
       return;
     }
-    const key = `${draft.channelId}:${draft.axis}`;
+    const key = `${channelId}:${draft.axis}`;
 
     setPlots((prev) =>
       prev.map((plot) => {
@@ -228,11 +228,10 @@ export default function App() {
         }
         return {
           ...plot,
-          assignments: [...plot.assignments, { channelId: draft.channelId, axis: draft.axis }]
+          assignments: [...plot.assignments, { channelId, axis: draft.axis }]
         };
       })
     );
-    closeContextMenu();
   };
 
   const removeAssignment = (plotId) => {
@@ -519,16 +518,22 @@ export default function App() {
       return undefined;
     }
 
-    const close = () => setContextMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    const close = (event) => {
+      if (menuRef.current?.contains(event.target)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
   }, [contextMenu]);
 
   const renderPlot = (plot) => {
     const samples = historyRef.current.slice(-600);
     const width = 1000;
-    const height = 260;
-    const padding = { top: 10, right: 52, bottom: 26, left: 52 };
+    const height = 280;
+    const padding = { top: 14, right: 60, bottom: 34, left: 60 };
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -691,7 +696,7 @@ export default function App() {
                 strokeWidth="1"
               />
               <text
-                x={padding.left - 6}
+                x={padding.left - 8}
                 y={y + 3}
                 textAnchor="end"
                 fontSize="10"
@@ -708,9 +713,9 @@ export default function App() {
           return (
             <text
               key={`y2-${tick}`}
-              x={width - padding.right + 6}
+              x={width - 8}
               y={y + 3}
-              textAnchor="start"
+              textAnchor="end"
               fontSize="10"
               fill="#64748b"
             >
@@ -907,21 +912,14 @@ export default function App() {
 
                   {contextMenu?.plotId === plot.id ? (
                     <div
+                      ref={menuRef}
                       className="plot-menu"
                       style={{ left: contextMenu.x, top: contextMenu.y }}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
                     >
                       <div className="plot-menu__section">
-                        <strong>Add channel</strong>
-                        <select
-                          value={draft.channelId}
-                          onChange={(event) => setDraft(plot.id, { channelId: event.target.value })}
-                        >
-                          {visibleChannels.map((channel) => (
-                            <option key={channel.id} value={channel.id}>
-                              {channel.name}
-                            </option>
-                          ))}
-                        </select>
+                        <strong>Add data</strong>
                         <select
                           value={draft.axis}
                           onChange={(event) => setDraft(plot.id, { axis: event.target.value })}
@@ -930,9 +928,17 @@ export default function App() {
                           <option value="y1">Y1</option>
                           <option value="y2">Y2</option>
                         </select>
-                        <button type="button" onClick={() => addAssignment(plot.id)}>
-                          Add
-                        </button>
+                        <div className="plot-menu__channels">
+                          {visibleChannels.map((channel) => (
+                            <button
+                              key={channel.id}
+                              type="button"
+                              onClick={() => addAssignment(plot.id, channel.id)}
+                            >
+                              {channel.name}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="plot-menu__section">

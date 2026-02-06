@@ -241,7 +241,8 @@ input {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 220px;
+  min-height: 320px;
+  max-height: 360px;
 }
 
 .plot__header {
@@ -273,7 +274,7 @@ input {
 }
 .plot__canvas {
   flex: 1;
-  min-height: 180px;
+  min-height: 230px;
   border-radius: 10px;
   border: 1px dashed #cbd5f5;
   display: flex;
@@ -296,6 +297,14 @@ input {
   padding: 10px;
   display: grid;
   gap: 12px;
+}
+
+.plot-menu__channels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
 }
 
 .plot-menu__section {
