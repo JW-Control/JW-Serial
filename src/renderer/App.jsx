@@ -8,10 +8,13 @@ const createDefaultChannels = (count) =>
     value: 0
   }));
 
-const defaultPlots = [
-  { id: "plot-1", title: "Plot 1", channels: ["val0", "val1"] },
-  { id: "plot-2", title: "Plot 2", channels: ["val2", "val3"] }
-];
+const createPlot = (index) => ({
+  id: `plot-${index}`,
+  title: `Plot ${index}`,
+  assignments: []
+});
+
+const defaultPlots = [createPlot(1), createPlot(2)];
 
 const commonBaudRates = [
   300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600,
@@ -28,8 +31,38 @@ const normalizeChannels = (count, previous) => {
   });
 };
 
+const channelIndex = (channelId) => Number(channelId.replace("val", ""));
+
+const buildPath = (points) =>
+  points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+
+const buildSeries = (samples, xValues, index, minY, maxY, height, width) => {
+  if (samples.length <= 1 || maxY - minY === 0) {
+    return "";
+  }
+
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  const spreadX = maxX - minX || 1;
+
+  const points = samples.map((sample, sampleIndex) => {
+    const value = sample.values[index] ?? 0;
+    const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
+    const normalizedY = (value - minY) / (maxY - minY || 1);
+    return {
+      x: normalizedX * width,
+      y: height - normalizedY * height
+    };
+  });
+
+  return buildPath(points);
+};
+
 export default function App() {
   const [plots, setPlots] = useState(defaultPlots);
+  const [plotDrafts, setPlotDrafts] = useState({});
   const [channels, setChannels] = useState(createDefaultChannels(10));
   const [activeTab, setActiveTab] = useState("plotter");
   const [modal, setModal] = useState(null);
@@ -44,6 +77,7 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [configText, setConfigText] = useState("");
   const [configMessage, setConfigMessage] = useState("");
+  const [dataVersion, setDataVersion] = useState(0);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -82,26 +116,87 @@ export default function App() {
     basicConfig,
     advancedConfig,
     baudRate,
-    selectedPort
+    selectedPort,
+    plots
   });
 
   const appendLog = (message) => {
-    setMonitorLog((prev) => [...prev.slice(-299), message]);
+    setMonitorLog((prev) => [...prev.slice(-399), message]);
+  };
+
+  const getDraft = (plotId) =>
+    plotDrafts[plotId] || {
+      channelId: visibleChannels[0]?.id || "val0",
+      axis: "y1",
+      removeKey: ""
+    };
+
+  const setDraft = (plotId, nextDraft) => {
+    setPlotDrafts((prev) => ({
+      ...prev,
+      [plotId]: {
+        ...getDraft(plotId),
+        ...nextDraft
+      }
+    }));
   };
 
   const addPlot = () => {
-    setPlots((prev) => [
-      ...prev,
-      {
-        id: `plot-${prev.length + 1}`,
-        title: `Plot ${prev.length + 1}`,
-        channels: []
-      }
-    ]);
+    setPlots((prev) => [...prev, createPlot(prev.length + 1)]);
   };
 
   const removePlot = () => {
     setPlots((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+  };
+
+  const addAssignment = (plotId) => {
+    const draft = getDraft(plotId);
+    if (!draft.channelId) {
+      return;
+    }
+    const key = `${draft.channelId}:${draft.axis}`;
+
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+        if (plot.assignments.some((item) => `${item.channelId}:${item.axis}` === key)) {
+          return plot;
+        }
+        return {
+          ...plot,
+          assignments: [...plot.assignments, { channelId: draft.channelId, axis: draft.axis }]
+        };
+      })
+    );
+  };
+
+  const removeAssignment = (plotId) => {
+    const draft = getDraft(plotId);
+    if (!draft.removeKey) {
+      return;
+    }
+
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+        return {
+          ...plot,
+          assignments: plot.assignments.filter(
+            (item) => `${item.channelId}:${item.axis}` !== draft.removeKey
+          )
+        };
+      })
+    );
+  };
+
+  const clearAssignments = (plotId) => {
+    setPlots((prev) =>
+      prev.map((plot) => (plot.id === plotId ? { ...plot, assignments: [] } : plot))
+    );
   };
 
   const closeModal = () => setModal(null);
@@ -204,6 +299,7 @@ export default function App() {
 
   const clearBuffer = () => {
     historyRef.current = [];
+    setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
     setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
   };
@@ -213,8 +309,8 @@ export default function App() {
       return;
     }
 
-    const header = ["timestamp", ...channels.map((channel) => channel.name)];
-    const rows = historyRef.current.map((item) => [item.timestamp, ...item.values]);
+    const header = ["timestamp", "xValue", ...channels.map((channel) => channel.name)];
+    const rows = historyRef.current.map((item) => [item.timestamp, item.xValue, ...item.values]);
     const csv = [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -257,6 +353,9 @@ export default function App() {
       if (parsed.selectedPort) {
         setSelectedPort(parsed.selectedPort);
       }
+      if (parsed.plots) {
+        setPlots(parsed.plots);
+      }
       setConfigMessage("Configuración aplicada.");
     } catch (_error) {
       setConfigMessage("JSON inválido. Revisa el formato.");
@@ -273,7 +372,7 @@ export default function App() {
       !window.jwSerial?.onRawLine ||
       !window.jwSerial?.onStatus
     ) {
-      appendLog("SYS > API serial no disponible en renderer (preload).\n");
+      appendLog("SYS > API serial no disponible en renderer (preload).");
       return undefined;
     }
 
@@ -285,6 +384,7 @@ export default function App() {
       const incomingValues = frame.includeTimestamp
         ? frame.values.slice(1)
         : frame.values;
+      const xValue = frame.includeTimestamp ? frame.values[0] : null;
       const channelCount =
         basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
 
@@ -302,11 +402,13 @@ export default function App() {
       );
       historyRef.current.push({
         timestamp: frame.timestamp,
+        xValue,
         values: incomingValues.slice(0, channelCount)
       });
       if (historyRef.current.length > maxSamples) {
         historyRef.current = historyRef.current.slice(-maxSamples);
       }
+      setDataVersion((prev) => prev + 1);
     });
 
     const unsubscribeRaw = window.jwSerial.onRawLine((line) => {
@@ -348,6 +450,92 @@ export default function App() {
       setConfigMessage("");
     }
   }, [modal]);
+
+  const renderPlot = (plot) => {
+    const samples = historyRef.current.slice(-600);
+    const width = 1000;
+    const height = 260;
+
+    if (samples.length < 2 || plot.assignments.length === 0) {
+      return <span>Esperando datos y canales asignados...</span>;
+    }
+
+    const xAssignment = plot.assignments.find((item) => item.axis === "x");
+    const xValues = samples.map((sample, index) => {
+      if (xAssignment) {
+        return sample.values[channelIndex(xAssignment.channelId)] ?? index;
+      }
+      if (basicConfig.includeTimestamp && sample.xValue !== null) {
+        return sample.xValue;
+      }
+      return index;
+    });
+
+    const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
+    if (yAssignments.length === 0) {
+      return <span>Asigna al menos un canal al eje Y.</span>;
+    }
+
+    const axisStats = {
+      y1: { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY },
+      y2: { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY }
+    };
+
+    yAssignments.forEach((assignment) => {
+      const idx = channelIndex(assignment.channelId);
+      samples.forEach((sample) => {
+        const value = sample.values[idx];
+        if (value === undefined) {
+          return;
+        }
+        axisStats[assignment.axis].min = Math.min(axisStats[assignment.axis].min, value);
+        axisStats[assignment.axis].max = Math.max(axisStats[assignment.axis].max, value);
+      });
+    });
+
+    const lines = yAssignments
+      .map((assignment) => {
+        const idx = channelIndex(assignment.channelId);
+        const stats = axisStats[assignment.axis];
+        if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
+          return null;
+        }
+
+        const path = buildSeries(
+          samples,
+          xValues,
+          idx,
+          stats.min,
+          stats.max,
+          height,
+          width
+        );
+        if (!path) {
+          return null;
+        }
+
+        const channel = channels[idx];
+        return (
+          <path
+            key={`${assignment.channelId}-${assignment.axis}`}
+            d={path}
+            fill="none"
+            stroke={channel?.color || "#2563eb"}
+            strokeWidth={assignment.axis === "y2" ? 1.5 : 2}
+            strokeDasharray={assignment.axis === "y2" ? "6 4" : ""}
+            opacity="0.95"
+          />
+        );
+      })
+      .filter(Boolean);
+
+    return (
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
+        {lines}
+      </svg>
+    );
+  };
 
   return (
     <div className="app">
@@ -504,20 +692,72 @@ export default function App() {
         </div>
 
         {activeTab === "plotter" ? (
-          <div className="plots">
-            {plots.map((plot) => (
-              <section className="plot" key={plot.id}>
-                <header className="plot__header">
-                  <h3>{plot.title}</h3>
-                  <div className="plot__legend">
-                    {plot.channels.length === 0 ? "Sin canales" : plot.channels.join(", ")}
+          <div className="plots" data-version={dataVersion}>
+            {plots.map((plot) => {
+              const draft = getDraft(plot.id);
+              const assignmentOptions = plot.assignments.map(
+                (item) => `${item.channelId}:${item.axis}`
+              );
+              return (
+                <section className="plot" key={plot.id}>
+                  <header className="plot__header">
+                    <h3>{plot.title}</h3>
+                    <div className="plot__legend">
+                      {plot.assignments.length === 0
+                        ? "Sin canales"
+                        : plot.assignments
+                            .map((item) => `${item.channelId.toUpperCase()}→${item.axis.toUpperCase()}`)
+                            .join(" | ")}
+                    </div>
+                  </header>
+
+                  <div className="plot__controls">
+                    <select
+                      value={draft.channelId}
+                      onChange={(event) => setDraft(plot.id, { channelId: event.target.value })}
+                    >
+                      {visibleChannels.map((channel) => (
+                        <option key={channel.id} value={channel.id}>
+                          {channel.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={draft.axis}
+                      onChange={(event) => setDraft(plot.id, { axis: event.target.value })}
+                    >
+                      <option value="x">X</option>
+                      <option value="y1">Y1</option>
+                      <option value="y2">Y2</option>
+                    </select>
+                    <button type="button" onClick={() => addAssignment(plot.id)}>
+                      Add channel
+                    </button>
+                    <select
+                      value={draft.removeKey}
+                      onChange={(event) =>
+                        setDraft(plot.id, { removeKey: event.target.value })
+                      }
+                    >
+                      <option value="">Seleccionar para remover</option>
+                      {assignmentOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={() => removeAssignment(plot.id)}>
+                      Remove
+                    </button>
+                    <button type="button" onClick={() => clearAssignments(plot.id)}>
+                      Remove all
+                    </button>
                   </div>
-                </header>
-                <div className="plot__canvas">
-                  <span>Área de gráfico (uPlot, pendiente de integración visual)</span>
-                </div>
-              </section>
-            ))}
+
+                  <div className="plot__canvas">{renderPlot(plot)}</div>
+                </section>
+              );
+            })}
           </div>
         ) : (
           <div className="monitor">
