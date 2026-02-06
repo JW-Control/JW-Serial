@@ -63,7 +63,7 @@ const makeTicks = (minValue, maxValue, targetTicks = 6) => {
   const ticks = [];
 
   for (let tick = start; tick <= safeMax + step; tick += step) {
-    if (tick >= min - step * 0.5 && tick <= safeMax + step * 0.5) {
+    if (tick >= min && tick <= safeMax) {
       ticks.push(Number(tick.toFixed(6)));
     }
   }
@@ -94,6 +94,24 @@ const makeMinorTicks = (ticksData, divisions = 10) => {
   }
 
   return values;
+};
+
+const makeXTicks = (minValue, maxValue, targetTicks = 8) => {
+  const min = Number.isFinite(minValue) ? minValue : 0;
+  const max = Number.isFinite(maxValue) ? maxValue : min + 1;
+  const safeMax = max <= min ? min + 1 : max;
+  const step = pickStep(safeMax - min, targetTicks);
+  const ticks = [Number(min.toFixed(6))];
+
+  for (let tick = min + step; tick <= safeMax + step * 0.5; tick += step) {
+    ticks.push(Number(Math.min(tick, safeMax).toFixed(6)));
+  }
+
+  if (ticks.length === 1 || ticks[ticks.length - 1] < safeMax) {
+    ticks.push(Number(safeMax.toFixed(6)));
+  }
+
+  return { ticks: [...new Set(ticks)], min, max: safeMax, step };
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -269,7 +287,7 @@ export default function App() {
   };
 
   const updatePlotHeight = (plotId, nextHeight) => {
-    const height = clamp(Number(nextHeight) || 320, 240, 560);
+    const height = clamp(Number(nextHeight) || 320, 240, 720);
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, height } : plot))
     );
@@ -625,7 +643,7 @@ export default function App() {
 
   const renderPlot = (plot) => {
     const samples = historyRef.current;
-    const layoutHeight = clamp(plot.height || 320, 240, 560);
+    const layoutHeight = clamp(plot.height || 320, 240, 720);
     const width = 1200;
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
@@ -679,8 +697,8 @@ export default function App() {
 
     const xMin = Math.min(...xValues);
     const xMax = Math.max(...xValues);
-    const xRange = normalizeAxisRange(xMin, xMax);
-    const xTicksData = makeTicks(xRange.min, xRange.max, xTargetTicks);
+    const rightPad = (xMax - xMin || 1) * 0.08;
+    const xTicksData = makeXTicks(xMin, xMax + rightPad, xTargetTicks);
 
     const xMinorTicks = makeMinorTicks(xTicksData, 10);
     const y1MinorTicks = makeMinorTicks(y1TicksData, 10);
@@ -738,7 +756,7 @@ export default function App() {
       .filter(Boolean);
 
     return (
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
         <line
           x1={padding.left}
