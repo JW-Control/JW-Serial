@@ -325,3 +325,30 @@ select {
   color: #475569;
   font-size: 14px;
 }
+
+.modal__form {
+  display: grid;
+  gap: 12px;
+}
+
+.modal__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.modal__form input,
+.modal__form select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  font-size: 13px;
+}
+
+.checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}

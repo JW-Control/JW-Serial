@@ -31,6 +31,21 @@ export default function App() {
   const [selectedPort, setSelectedPort] = useState("");
   const [baudRate, setBaudRate] = useState(115200);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
+  const [isPaused, setIsPaused] = useState(false);
+  const [basicConfig, setBasicConfig] = useState({
+    channelCount: 0,
+    samplesPerSecond: 80,
+    periodMs: 12.5,
+    bufferSeconds: 36000,
+    refreshMs: 100,
+    plotMode: "normal",
+    includeTimestamp: false
+  });
+  const [advancedConfig, setAdvancedConfig] = useState({
+    dataBits: 8,
+    parity: "none",
+    stopBits: 1
+  });
 
   const addPlot = () => {
     setPlots((prev) => [
@@ -71,6 +86,43 @@ export default function App() {
     setMonitorMessage("");
   };
 
+  const updateBasicConfig = (key, value) => {
+    setBasicConfig((prev) => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const updateAdvancedConfig = (key, value) => {
+    setAdvancedConfig((prev) => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const handleSamplesChange = (value) => {
+    const samplesPerSecond = Number(value);
+    if (Number.isNaN(samplesPerSecond) || samplesPerSecond <= 0) {
+      updateBasicConfig("samplesPerSecond", 0);
+      return;
+    }
+    updateBasicConfig("samplesPerSecond", samplesPerSecond);
+    updateBasicConfig("periodMs", Number((1000 / samplesPerSecond).toFixed(2)));
+  };
+
+  const handlePeriodChange = (value) => {
+    const periodMs = Number(value);
+    if (Number.isNaN(periodMs) || periodMs <= 0) {
+      updateBasicConfig("periodMs", 0);
+      return;
+    }
+    updateBasicConfig("periodMs", periodMs);
+    updateBasicConfig(
+      "samplesPerSecond",
+      Number((1000 / periodMs).toFixed(2))
+    );
+  };
+
   const refreshPorts = async () => {
     if (!window.jwSerial?.listPorts) {
       setPorts([]);
@@ -96,9 +148,9 @@ export default function App() {
       await window.jwSerial.openPort({
         path: selectedPort,
         baudRate,
-        dataBits: 8,
-        parity: "none",
-        stopBits: 1
+        dataBits: advancedConfig.dataBits,
+        parity: advancedConfig.parity,
+        stopBits: advancedConfig.stopBits
       });
       setConnectionStatus("connected");
     } catch (error) {
@@ -173,6 +225,9 @@ export default function App() {
             <p className="connection-status">
               Estado: {connectionStatus}
             </p>
+            {isPaused ? (
+              <p className="connection-status">Ploteo en pausa</p>
+            ) : null}
           </section>
 
           <section className="sidebar__section">
@@ -202,8 +257,11 @@ export default function App() {
               <button type="button" onClick={() => handleAction("advanced")}>
                 Configuración avanzada
               </button>
-              <button type="button" onClick={() => handleAction("pause")}>
-                Pausar
+              <button
+                type="button"
+                onClick={() => setIsPaused((prev) => !prev)}
+              >
+                {isPaused ? "Reanudar" : "Pausar"}
               </button>
               <button type="button" onClick={() => handleAction("clear")}>
                 Limpiar buffer
@@ -317,10 +375,159 @@ export default function App() {
               </button>
             </header>
             <div className="modal__body">
-              <p>
-                Este panel es un placeholder del MVP. Aquí iremos colocando los
-                campos y opciones reales según cada acción.
-              </p>
+              {modal === "basic" ? (
+                <div className="modal__form">
+                  <label>
+                    Canales por trama (0 = auto)
+                    <input
+                      type="number"
+                      min="0"
+                      value={basicConfig.channelCount}
+                      onChange={(event) =>
+                        updateBasicConfig(
+                          "channelCount",
+                          Number(event.target.value)
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    SPS (muestras/seg)
+                    <input
+                      type="number"
+                      min="1"
+                      value={basicConfig.samplesPerSecond}
+                      onChange={(event) =>
+                        handleSamplesChange(event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Periodo (ms)
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={basicConfig.periodMs}
+                      onChange={(event) =>
+                        handlePeriodChange(event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Buffer (segundos)
+                    <input
+                      type="number"
+                      min="1"
+                      value={basicConfig.bufferSeconds}
+                      onChange={(event) =>
+                        updateBasicConfig(
+                          "bufferSeconds",
+                          Number(event.target.value)
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    Refresh UI (ms)
+                    <input
+                      type="number"
+                      min="16"
+                      value={basicConfig.refreshMs}
+                      onChange={(event) =>
+                        updateBasicConfig(
+                          "refreshMs",
+                          Number(event.target.value)
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    Modo de ploteo
+                    <select
+                      value={basicConfig.plotMode}
+                      onChange={(event) =>
+                        updateBasicConfig("plotMode", event.target.value)
+                      }
+                    >
+                      <option value="normal">Normal</option>
+                      <option value="minmax">Min/Max agregado</option>
+                    </select>
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={basicConfig.includeTimestamp}
+                      onChange={(event) =>
+                        updateBasicConfig(
+                          "includeTimestamp",
+                          event.target.checked
+                        )
+                      }
+                    />
+                    Incluye timestamp en X
+                  </label>
+                </div>
+              ) : null}
+              {modal === "advanced" ? (
+                <div className="modal__form">
+                  <label>
+                    Data bits
+                    <select
+                      value={advancedConfig.dataBits}
+                      onChange={(event) =>
+                        updateAdvancedConfig(
+                          "dataBits",
+                          Number(event.target.value)
+                        )
+                      }
+                    >
+                      <option value={7}>7</option>
+                      <option value={8}>8</option>
+                    </select>
+                  </label>
+                  <label>
+                    Paridad
+                    <select
+                      value={advancedConfig.parity}
+                      onChange={(event) =>
+                        updateAdvancedConfig("parity", event.target.value)
+                      }
+                    >
+                      <option value="none">Ninguna</option>
+                      <option value="even">Par</option>
+                      <option value="odd">Impar</option>
+                    </select>
+                  </label>
+                  <label>
+                    Stop bits
+                    <select
+                      value={advancedConfig.stopBits}
+                      onChange={(event) =>
+                        updateAdvancedConfig(
+                          "stopBits",
+                          Number(event.target.value)
+                        )
+                      }
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+              {modal === "clear" ? (
+                <p>El buffer se vaciará cuando conectemos el backend.</p>
+              ) : null}
+              {modal === "export" ? (
+                <p>Exportación CSV pendiente de los datos reales.</p>
+              ) : null}
+              {modal === "save" ? (
+                <p>Guardado de perfil en JSON (pendiente de implementación).</p>
+              ) : null}
+              {modal === "load" ? (
+                <p>Carga de perfil en JSON (pendiente de implementación).</p>
+              ) : null}
             </div>
           </div>
         </div>
