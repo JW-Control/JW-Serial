@@ -280,13 +280,20 @@ select {
   border: 1px solid #e2e8f0;
   background: #ffffff;
   padding: 16px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .monitor__placeholder {
   margin: 0;
   color: #94a3b8;
   font-size: 13px;
+}
+
+.monitor__line {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  color: #334155;
 }
 
 .monitor__controls {

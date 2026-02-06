@@ -1,32 +1,35 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const defaultChannels = Array.from({ length: 10 }, (_, index) => ({
-  id: `val${index}`,
-  name: `val${index}`,
-  color: `hsl(${index * 32} 70% 50%)`,
-  value: 0
-}));
+const createDefaultChannels = (count) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `val${index}`,
+    name: `val${index}`,
+    color: `hsl(${index * 32} 70% 50%)`,
+    value: 0
+  }));
 
 const defaultPlots = [
-  {
-    id: "plot-1",
-    title: "Plot 1",
-    channels: ["val0", "val1"]
-  },
-  {
-    id: "plot-2",
-    title: "Plot 2",
-    channels: ["val2", "val3"]
-  }
+  { id: "plot-1", title: "Plot 1", channels: ["val0", "val1"] },
+  { id: "plot-2", title: "Plot 2", channels: ["val2", "val3"] }
 ];
+
+const normalizeChannels = (count, previous) => {
+  const safeCount = Math.max(1, count);
+  const base = createDefaultChannels(safeCount);
+  return base.map((item, index) => {
+    const prev = previous[index];
+    return prev ? { ...item, ...prev, id: item.id } : item;
+  });
+};
 
 export default function App() {
   const [plots, setPlots] = useState(defaultPlots);
-  const channels = useMemo(() => defaultChannels, []);
+  const [channels, setChannels] = useState(createDefaultChannels(10));
   const [activeTab, setActiveTab] = useState("plotter");
   const [modal, setModal] = useState(null);
   const [terminator, setTerminator] = useState("none");
   const [monitorMessage, setMonitorMessage] = useState("");
+  const [monitorLog, setMonitorLog] = useState([]);
   const [ports, setPorts] = useState([]);
   const [selectedPort, setSelectedPort] = useState("");
   const [baudRate, setBaudRate] = useState(115200);
@@ -34,6 +37,8 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [configText, setConfigText] = useState("");
   const [configMessage, setConfigMessage] = useState("");
+  const historyRef = useRef([]);
+
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
     samplesPerSecond: 80,
@@ -41,8 +46,10 @@ export default function App() {
     bufferSeconds: 36000,
     refreshMs: 100,
     plotMode: "normal",
-    includeTimestamp: false
+    includeTimestamp: false,
+    minValidFrames: 3
   });
+
   const [advancedConfig, setAdvancedConfig] = useState({
     dataBits: 8,
     parity: "none",
@@ -71,6 +78,10 @@ export default function App() {
     selectedPort
   });
 
+  const appendLog = (message) => {
+    setMonitorLog((prev) => [...prev.slice(-299), message]);
+  };
+
   const addPlot = () => {
     setPlots((prev) => [
       ...prev,
@@ -86,12 +97,117 @@ export default function App() {
     setPlots((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
   };
 
-  const handleAction = (action) => {
-    setModal(action);
+  const closeModal = () => setModal(null);
+
+  const handleSend = async () => {
+    if (!monitorMessage.trim()) {
+      return;
+    }
+
+    const suffix =
+      terminator === "nl"
+        ? "\n"
+        : terminator === "cr"
+          ? "\r"
+          : terminator === "nlcr"
+            ? "\n\r"
+            : "";
+
+    const payload = `${monitorMessage}${suffix}`;
+    const response = await window.jwSerial?.sendMessage?.(payload);
+    if (response?.ok) {
+      appendLog(`TX > ${monitorMessage}`);
+      setMonitorMessage("");
+    }
   };
 
-  const closeModal = () => {
-    setModal(null);
+  const updateBasicConfig = (key, value) => {
+    setBasicConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateAdvancedConfig = (key, value) => {
+    setAdvancedConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleSamplesChange = (value) => {
+    const samplesPerSecond = Number(value);
+    if (!samplesPerSecond || samplesPerSecond <= 0) {
+      return;
+    }
+    updateBasicConfig("samplesPerSecond", samplesPerSecond);
+    updateBasicConfig("periodMs", Number((1000 / samplesPerSecond).toFixed(2)));
+  };
+
+  const handlePeriodChange = (value) => {
+    const periodMs = Number(value);
+    if (!periodMs || periodMs <= 0) {
+      return;
+    }
+    updateBasicConfig("periodMs", periodMs);
+    updateBasicConfig("samplesPerSecond", Number((1000 / periodMs).toFixed(2)));
+  };
+
+  const refreshPorts = async () => {
+    try {
+      const nextPorts = await window.jwSerial.listPorts();
+      setPorts(nextPorts);
+      if (!selectedPort && nextPorts.length > 0) {
+        setSelectedPort(nextPorts[0].path);
+      }
+    } catch (_error) {
+      setPorts([]);
+    }
+  };
+
+  const handleConnect = async () => {
+    if (!selectedPort) {
+      return;
+    }
+
+    try {
+      setConnectionStatus("connecting");
+      await window.jwSerial.openPort({
+        path: selectedPort,
+        baudRate,
+        dataBits: advancedConfig.dataBits,
+        parity: advancedConfig.parity,
+        stopBits: advancedConfig.stopBits,
+        expectedChannels: basicConfig.channelCount,
+        minValidFrames: basicConfig.minValidFrames,
+        includeTimestamp: basicConfig.includeTimestamp
+      });
+      setConnectionStatus("connected");
+    } catch (_error) {
+      setConnectionStatus("error");
+    }
+  };
+
+  const handleDisconnect = async () => {
+    await window.jwSerial.closePort();
+    setConnectionStatus("disconnected");
+  };
+
+  const clearBuffer = () => {
+    historyRef.current = [];
+    setMonitorLog([]);
+    setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
+  };
+
+  const exportCsv = () => {
+    if (historyRef.current.length === 0) {
+      return;
+    }
+
+    const header = ["timestamp", ...channels.map((channel) => channel.name)];
+    const rows = historyRef.current.map((item) => [item.timestamp, ...item.values]);
+    const csv = [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `jw-serial-${Date.now()}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleSaveConfig = () => {
@@ -127,110 +243,80 @@ export default function App() {
         setSelectedPort(parsed.selectedPort);
       }
       setConfigMessage("Configuración aplicada.");
-    } catch (error) {
+    } catch (_error) {
       setConfigMessage("JSON inválido. Revisa el formato.");
     }
-  };
-
-  const handleSend = () => {
-    if (!monitorMessage.trim()) {
-      return;
-    }
-    const suffix =
-      terminator === "nl"
-        ? "\n"
-        : terminator === "cr"
-          ? "\r"
-          : terminator === "nlcr"
-            ? "\n\r"
-            : "";
-    window.jwSerial?.sendMessage?.(`${monitorMessage}${suffix}`);
-    setMonitorMessage("");
-  };
-
-  const updateBasicConfig = (key, value) => {
-    setBasicConfig((prev) => ({
-      ...prev,
-      [key]: value
-    }));
-  };
-
-  const updateAdvancedConfig = (key, value) => {
-    setAdvancedConfig((prev) => ({
-      ...prev,
-      [key]: value
-    }));
-  };
-
-  const handleSamplesChange = (value) => {
-    const samplesPerSecond = Number(value);
-    if (Number.isNaN(samplesPerSecond) || samplesPerSecond <= 0) {
-      updateBasicConfig("samplesPerSecond", 0);
-      return;
-    }
-    updateBasicConfig("samplesPerSecond", samplesPerSecond);
-    updateBasicConfig("periodMs", Number((1000 / samplesPerSecond).toFixed(2)));
-  };
-
-  const handlePeriodChange = (value) => {
-    const periodMs = Number(value);
-    if (Number.isNaN(periodMs) || periodMs <= 0) {
-      updateBasicConfig("periodMs", 0);
-      return;
-    }
-    updateBasicConfig("periodMs", periodMs);
-    updateBasicConfig(
-      "samplesPerSecond",
-      Number((1000 / periodMs).toFixed(2))
-    );
-  };
-
-  const refreshPorts = async () => {
-    if (!window.jwSerial?.listPorts) {
-      setPorts([]);
-      return;
-    }
-    try {
-      const nextPorts = await window.jwSerial.listPorts();
-      setPorts(nextPorts);
-      if (!selectedPort && nextPorts.length > 0) {
-        setSelectedPort(nextPorts[0].path);
-      }
-    } catch (error) {
-      setPorts([]);
-    }
-  };
-
-  const handleConnect = async () => {
-    if (!window.jwSerial?.openPort || !selectedPort) {
-      return;
-    }
-    try {
-      setConnectionStatus("connecting");
-      await window.jwSerial.openPort({
-        path: selectedPort,
-        baudRate,
-        dataBits: advancedConfig.dataBits,
-        parity: advancedConfig.parity,
-        stopBits: advancedConfig.stopBits
-      });
-      setConnectionStatus("connected");
-    } catch (error) {
-      setConnectionStatus("error");
-    }
-  };
-
-  const handleDisconnect = async () => {
-    if (!window.jwSerial?.closePort) {
-      return;
-    }
-    await window.jwSerial.closePort();
-    setConnectionStatus("disconnected");
   };
 
   useEffect(() => {
     refreshPorts();
   }, []);
+
+  useEffect(() => {
+    const unsubscribeFrame = window.jwSerial.onFrame((frame) => {
+      if (isPaused) {
+        return;
+      }
+
+      const incomingValues = frame.includeTimestamp
+        ? frame.values.slice(1)
+        : frame.values;
+      const channelCount =
+        basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
+
+      setChannels((prev) => {
+        const normalized = normalizeChannels(channelCount, prev);
+        return normalized.map((channel, index) => ({
+          ...channel,
+          value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
+        }));
+      });
+
+      const maxSamples = Math.max(
+        1,
+        Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
+      );
+      historyRef.current.push({
+        timestamp: frame.timestamp,
+        values: incomingValues.slice(0, channelCount)
+      });
+      if (historyRef.current.length > maxSamples) {
+        historyRef.current = historyRef.current.slice(-maxSamples);
+      }
+    });
+
+    const unsubscribeRaw = window.jwSerial.onRawLine((line) => {
+      if (!line?.trim()) {
+        return;
+      }
+      appendLog(`RX > ${line}`);
+    });
+
+    const unsubscribeStatus = window.jwSerial.onStatus((status) => {
+      if (status.type === "error") {
+        setConnectionStatus("error");
+      }
+      if (status.type === "closed") {
+        setConnectionStatus("disconnected");
+      }
+      if (status.type === "open") {
+        setConnectionStatus("connected");
+      }
+      appendLog(`SYS > ${status.message}`);
+    });
+
+    return () => {
+      unsubscribeFrame?.();
+      unsubscribeRaw?.();
+      unsubscribeStatus?.();
+    };
+  }, [basicConfig, isPaused]);
+
+  useEffect(() => {
+    if (basicConfig.channelCount > 0) {
+      setChannels((prev) => normalizeChannels(basicConfig.channelCount, prev));
+    }
+  }, [basicConfig.channelCount]);
 
   useEffect(() => {
     if (modal === "save" || modal === "load") {
@@ -258,6 +344,7 @@ export default function App() {
           </div>
           <p>MVP · Windows</p>
         </header>
+
         <div className="sidebar__content">
           <section className="sidebar__section">
             <h2>Conexión</h2>
@@ -303,9 +390,7 @@ export default function App() {
                 </button>
               )}
             </div>
-            <p className="connection-status">
-              Estado: {connectionStatus}
-            </p>
+            <p className="connection-status">Estado: {connectionStatus}</p>
           </section>
 
           <section className="sidebar__section">
@@ -318,9 +403,7 @@ export default function App() {
                     style={{ backgroundColor: channel.color }}
                   />
                   <span className="channel-name">{channel.name}</span>
-                  <span className="channel-value">
-                    {channel.value.toFixed(2)}
-                  </span>
+                  <span className="channel-value">{channel.value.toFixed(2)}</span>
                 </div>
               ))}
             </div>
@@ -329,28 +412,25 @@ export default function App() {
           <section className="sidebar__section">
             <h2>Acciones</h2>
             <div className="actions">
-              <button type="button" onClick={() => handleAction("basic")}>
+              <button type="button" onClick={() => setModal("basic")}>
                 Configuración básica
               </button>
-              <button type="button" onClick={() => handleAction("advanced")}>
+              <button type="button" onClick={() => setModal("advanced")}>
                 Configuración avanzada
               </button>
-              <button
-                type="button"
-                onClick={() => setIsPaused((prev) => !prev)}
-              >
+              <button type="button" onClick={() => setIsPaused((prev) => !prev)}>
                 {isPaused ? "Reanudar" : "Pausar"}
               </button>
-              <button type="button" onClick={() => handleAction("clear")}>
+              <button type="button" onClick={clearBuffer}>
                 Limpiar buffer
               </button>
-              <button type="button" onClick={() => handleAction("export")}>
+              <button type="button" onClick={exportCsv}>
                 Exportar CSV
               </button>
-              <button type="button" onClick={() => handleAction("save")}>
+              <button type="button" onClick={() => setModal("save")}>
                 Guardar configuración
               </button>
-              <button type="button" onClick={() => handleAction("load")}>
+              <button type="button" onClick={() => setModal("load")}>
                 Cargar configuración
               </button>
             </div>
@@ -393,13 +473,11 @@ export default function App() {
                 <header className="plot__header">
                   <h3>{plot.title}</h3>
                   <div className="plot__legend">
-                    {plot.channels.length === 0
-                      ? "Sin canales"
-                      : plot.channels.join(", ")}
+                    {plot.channels.length === 0 ? "Sin canales" : plot.channels.join(", ")}
                   </div>
                 </header>
                 <div className="plot__canvas">
-                  <span>Área de gráfico (uPlot)</span>
+                  <span>Área de gráfico (uPlot, pendiente de integración visual)</span>
                 </div>
               </section>
             ))}
@@ -407,9 +485,15 @@ export default function App() {
         ) : (
           <div className="monitor">
             <div className="monitor__log">
-              <p className="monitor__placeholder">
-                Aquí se verá el monitor serial.
-              </p>
+              {monitorLog.length === 0 ? (
+                <p className="monitor__placeholder">Aquí se verá el monitor serial.</p>
+              ) : (
+                monitorLog.map((line, index) => (
+                  <p key={`${line}-${index}`} className="monitor__line">
+                    {line}
+                  </p>
+                ))
+              )}
             </div>
             <div className="monitor__controls">
               <input
@@ -442,9 +526,6 @@ export default function App() {
               <h3>
                 {modal === "basic" && "Configuración básica"}
                 {modal === "advanced" && "Configuración avanzada"}
-                {modal === "pause" && "Pausar"}
-                {modal === "clear" && "Limpiar buffer"}
-                {modal === "export" && "Exportar CSV"}
                 {modal === "save" && "Guardar configuración"}
                 {modal === "load" && "Cargar configuración"}
               </h3>
@@ -462,10 +543,7 @@ export default function App() {
                       min="0"
                       value={basicConfig.channelCount}
                       onChange={(event) =>
-                        updateBasicConfig(
-                          "channelCount",
-                          Number(event.target.value)
-                        )
+                        updateBasicConfig("channelCount", Number(event.target.value))
                       }
                     />
                   </label>
@@ -475,9 +553,7 @@ export default function App() {
                       type="number"
                       min="1"
                       value={basicConfig.samplesPerSecond}
-                      onChange={(event) =>
-                        handleSamplesChange(event.target.value)
-                      }
+                      onChange={(event) => handleSamplesChange(event.target.value)}
                     />
                   </label>
                   <label>
@@ -487,9 +563,7 @@ export default function App() {
                       min="1"
                       step="0.1"
                       value={basicConfig.periodMs}
-                      onChange={(event) =>
-                        handlePeriodChange(event.target.value)
-                      }
+                      onChange={(event) => handlePeriodChange(event.target.value)}
                     />
                   </label>
                   <label>
@@ -499,10 +573,7 @@ export default function App() {
                       min="1"
                       value={basicConfig.bufferSeconds}
                       onChange={(event) =>
-                        updateBasicConfig(
-                          "bufferSeconds",
-                          Number(event.target.value)
-                        )
+                        updateBasicConfig("bufferSeconds", Number(event.target.value))
                       }
                     />
                   </label>
@@ -513,10 +584,18 @@ export default function App() {
                       min="16"
                       value={basicConfig.refreshMs}
                       onChange={(event) =>
-                        updateBasicConfig(
-                          "refreshMs",
-                          Number(event.target.value)
-                        )
+                        updateBasicConfig("refreshMs", Number(event.target.value))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Min. tramas válidas para iniciar
+                    <input
+                      type="number"
+                      min="1"
+                      value={basicConfig.minValidFrames}
+                      onChange={(event) =>
+                        updateBasicConfig("minValidFrames", Number(event.target.value))
                       }
                     />
                   </label>
@@ -524,9 +603,7 @@ export default function App() {
                     Modo de ploteo
                     <select
                       value={basicConfig.plotMode}
-                      onChange={(event) =>
-                        updateBasicConfig("plotMode", event.target.value)
-                      }
+                      onChange={(event) => updateBasicConfig("plotMode", event.target.value)}
                     >
                       <option value="normal">Normal</option>
                       <option value="minmax">Min/Max agregado</option>
@@ -537,16 +614,14 @@ export default function App() {
                       type="checkbox"
                       checked={basicConfig.includeTimestamp}
                       onChange={(event) =>
-                        updateBasicConfig(
-                          "includeTimestamp",
-                          event.target.checked
-                        )
+                        updateBasicConfig("includeTimestamp", event.target.checked)
                       }
                     />
                     Incluye timestamp en X
                   </label>
                 </div>
               ) : null}
+
               {modal === "advanced" ? (
                 <div className="modal__form">
                   <label>
@@ -554,10 +629,7 @@ export default function App() {
                     <select
                       value={advancedConfig.dataBits}
                       onChange={(event) =>
-                        updateAdvancedConfig(
-                          "dataBits",
-                          Number(event.target.value)
-                        )
+                        updateAdvancedConfig("dataBits", Number(event.target.value))
                       }
                     >
                       <option value={7}>7</option>
@@ -582,10 +654,7 @@ export default function App() {
                     <select
                       value={advancedConfig.stopBits}
                       onChange={(event) =>
-                        updateAdvancedConfig(
-                          "stopBits",
-                          Number(event.target.value)
-                        )
+                        updateAdvancedConfig("stopBits", Number(event.target.value))
                       }
                     >
                       <option value={1}>1</option>
@@ -594,13 +663,8 @@ export default function App() {
                   </label>
                 </div>
               ) : null}
-              {modal === "clear" ? (
-                <p>El buffer se vaciará cuando conectemos el backend.</p>
-              ) : null}
-              {modal === "export" ? (
-                <p>Exportación CSV pendiente de los datos reales.</p>
-              ) : null}
-              {modal === "save" ? (
+
+              {modal === "save" || modal === "load" ? (
                 <div className="modal__form">
                   <label>
                     Configuración (JSON)
@@ -611,39 +675,20 @@ export default function App() {
                     />
                   </label>
                   <div className="modal__actions">
-                    <button type="button" onClick={handleSaveConfig}>
-                      Guardar local
-                    </button>
+                    {modal === "save" ? (
+                      <button type="button" onClick={handleSaveConfig}>
+                        Guardar local
+                      </button>
+                    ) : (
+                      <button type="button" onClick={handleLoadConfig}>
+                        Cargar local
+                      </button>
+                    )}
                     <button type="button" onClick={applyConfigText}>
                       Aplicar JSON
                     </button>
                   </div>
-                  {configMessage ? (
-                    <p className="modal__hint">{configMessage}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              {modal === "load" ? (
-                <div className="modal__form">
-                  <label>
-                    Configuración (JSON)
-                    <textarea
-                      rows={8}
-                      value={configText}
-                      onChange={(event) => setConfigText(event.target.value)}
-                    />
-                  </label>
-                  <div className="modal__actions">
-                    <button type="button" onClick={handleLoadConfig}>
-                      Cargar local
-                    </button>
-                    <button type="button" onClick={applyConfigText}>
-                      Aplicar JSON
-                    </button>
-                  </div>
-                  {configMessage ? (
-                    <p className="modal__hint">{configMessage}</p>
-                  ) : null}
+                  {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
                 </div>
               ) : null}
             </div>

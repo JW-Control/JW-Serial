@@ -9,8 +9,107 @@ const __dirname = path.dirname(__filename);
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const devUrl = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 
+let mainWindow = null;
+let activePort = null;
+let readBuffer = "";
+let validFrameStreak = 0;
+let portConfig = {
+  expectedChannels: 0,
+  minValidFrames: 3,
+  includeTimestamp: false
+};
+
+const emitToRenderer = (channel, payload) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(channel, payload);
+};
+
+const parseLine = (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const delimiter = trimmed.includes("\t") ? "\t" : ",";
+  const chunks = trimmed
+    .split(delimiter)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (chunks.length === 0) {
+    return null;
+  }
+
+  const values = chunks.map((part) => Number(part));
+  if (values.some((value) => Number.isNaN(value))) {
+    return null;
+  }
+
+  return {
+    delimiter,
+    values,
+    raw: trimmed
+  };
+};
+
+const handleIncomingChunk = (chunk) => {
+  readBuffer += chunk.toString("utf8");
+
+  const lines = readBuffer.split(/\r?\n/);
+  readBuffer = lines.pop() || "";
+
+  lines.forEach((line) => {
+    emitToRenderer("serial:raw-line", line);
+
+    const parsed = parseLine(line);
+    if (!parsed) {
+      validFrameStreak = 0;
+      return;
+    }
+
+    if (
+      portConfig.expectedChannels > 0 &&
+      parsed.values.length !== portConfig.expectedChannels
+    ) {
+      validFrameStreak = 0;
+      return;
+    }
+
+    validFrameStreak += 1;
+    if (validFrameStreak < portConfig.minValidFrames) {
+      return;
+    }
+
+    emitToRenderer("serial:frame", {
+      ...parsed,
+      timestamp: Date.now(),
+      includeTimestamp: portConfig.includeTimestamp
+    });
+  });
+};
+
+const cleanupPort = async () => {
+  if (!activePort) {
+    return;
+  }
+
+  activePort.removeAllListeners("data");
+  activePort.removeAllListeners("error");
+  activePort.removeAllListeners("close");
+
+  if (activePort.isOpen) {
+    await new Promise((resolve) => activePort.close(() => resolve()));
+  }
+
+  activePort = null;
+  readBuffer = "";
+  validFrameStreak = 0;
+};
+
 const createWindow = () => {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
@@ -19,13 +118,11 @@ const createWindow = () => {
   });
 
   if (isDev) {
-    win.loadURL(devUrl);
+    mainWindow.loadURL(devUrl);
   } else {
-    win.loadFile(path.join(__dirname, "../../dist/renderer/index.html"));
+    mainWindow.loadFile(path.join(__dirname, "../../dist/renderer/index.html"));
   }
 };
-
-let activePort = null;
 
 ipcMain.handle("serial:list", async () => {
   const ports = await SerialPort.list();
@@ -37,10 +134,13 @@ ipcMain.handle("serial:list", async () => {
 });
 
 ipcMain.handle("serial:open", async (_event, options) => {
-  if (activePort) {
-    await new Promise((resolve) => activePort.close(resolve));
-    activePort = null;
-  }
+  await cleanupPort();
+
+  portConfig = {
+    expectedChannels: Number(options.expectedChannels || 0),
+    minValidFrames: Number(options.minValidFrames || 3),
+    includeTimestamp: Boolean(options.includeTimestamp)
+  };
 
   activePort = new SerialPort({
     path: options.path,
@@ -49,6 +149,20 @@ ipcMain.handle("serial:open", async (_event, options) => {
     parity: options.parity,
     stopBits: options.stopBits,
     autoOpen: false
+  });
+
+  activePort.on("data", handleIncomingChunk);
+  activePort.on("error", (error) => {
+    emitToRenderer("serial:status", {
+      type: "error",
+      message: error.message
+    });
+  });
+  activePort.on("close", () => {
+    emitToRenderer("serial:status", {
+      type: "closed",
+      message: "Puerto cerrado"
+    });
   });
 
   await new Promise((resolve, reject) => {
@@ -61,20 +175,25 @@ ipcMain.handle("serial:open", async (_event, options) => {
     });
   });
 
+  emitToRenderer("serial:status", {
+    type: "open",
+    message: `Conectado a ${options.path}`
+  });
+
   return { ok: true };
 });
 
 ipcMain.handle("serial:close", async () => {
-  if (!activePort) {
-    return { ok: true };
-  }
-  await new Promise((resolve) => activePort.close(resolve));
-  activePort = null;
+  await cleanupPort();
+  emitToRenderer("serial:status", {
+    type: "closed",
+    message: "Puerto desconectado"
+  });
   return { ok: true };
 });
 
 ipcMain.handle("serial:send", async (_event, message) => {
-  if (!activePort) {
+  if (!activePort || !activePort.isOpen) {
     return { ok: false, error: "Port not open" };
   }
 
@@ -99,6 +218,10 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+app.on("before-quit", async () => {
+  await cleanupPort();
 });
 
 app.on("window-all-closed", () => {
