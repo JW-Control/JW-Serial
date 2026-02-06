@@ -32,6 +32,8 @@ export default function App() {
   const [baudRate, setBaudRate] = useState(115200);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isPaused, setIsPaused] = useState(false);
+  const [configText, setConfigText] = useState("");
+  const [configMessage, setConfigMessage] = useState("");
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
     samplesPerSecond: 80,
@@ -45,6 +47,28 @@ export default function App() {
     dataBits: 8,
     parity: "none",
     stopBits: 1
+  });
+
+  const visibleChannels = useMemo(() => {
+    if (basicConfig.channelCount <= 0) {
+      return channels;
+    }
+    return channels.slice(0, basicConfig.channelCount);
+  }, [basicConfig.channelCount, channels]);
+
+  const statusTone = isPaused
+    ? "paused"
+    : connectionStatus === "connected"
+      ? "connected"
+      : connectionStatus === "error"
+        ? "error"
+        : "disconnected";
+
+  const buildConfigSnapshot = () => ({
+    basicConfig,
+    advancedConfig,
+    baudRate,
+    selectedPort
   });
 
   const addPlot = () => {
@@ -68,6 +92,44 @@ export default function App() {
 
   const closeModal = () => {
     setModal(null);
+  };
+
+  const handleSaveConfig = () => {
+    const payload = JSON.stringify(buildConfigSnapshot(), null, 2);
+    setConfigText(payload);
+    localStorage.setItem("jwSerialConfig", payload);
+    setConfigMessage("Configuración guardada localmente.");
+  };
+
+  const handleLoadConfig = () => {
+    const saved = localStorage.getItem("jwSerialConfig");
+    if (!saved) {
+      setConfigMessage("No hay configuración guardada.");
+      return;
+    }
+    setConfigText(saved);
+    setConfigMessage("Configuración cargada desde almacenamiento local.");
+  };
+
+  const applyConfigText = () => {
+    try {
+      const parsed = JSON.parse(configText);
+      if (parsed.basicConfig) {
+        setBasicConfig(parsed.basicConfig);
+      }
+      if (parsed.advancedConfig) {
+        setAdvancedConfig(parsed.advancedConfig);
+      }
+      if (parsed.baudRate) {
+        setBaudRate(parsed.baudRate);
+      }
+      if (parsed.selectedPort) {
+        setSelectedPort(parsed.selectedPort);
+      }
+      setConfigMessage("Configuración aplicada.");
+    } catch (error) {
+      setConfigMessage("JSON inválido. Revisa el formato.");
+    }
   };
 
   const handleSend = () => {
@@ -170,11 +232,30 @@ export default function App() {
     refreshPorts();
   }, []);
 
+  useEffect(() => {
+    if (modal === "save" || modal === "load") {
+      setConfigText(JSON.stringify(buildConfigSnapshot(), null, 2));
+      setConfigMessage("");
+    }
+  }, [modal]);
+
   return (
     <div className="app">
       <aside className="sidebar">
         <header className="sidebar__header">
           <h1>JW-Serial</h1>
+          <div className="sidebar__status">
+            <span className={`status-dot status-dot--${statusTone}`} />
+            <span>
+              {isPaused
+                ? "Pausado"
+                : connectionStatus === "connected"
+                  ? "Capturando"
+                  : connectionStatus === "error"
+                    ? "Error"
+                    : "Desconectado"}
+            </span>
+          </div>
           <p>MVP · Windows</p>
         </header>
         <div className="sidebar__content">
@@ -225,15 +306,12 @@ export default function App() {
             <p className="connection-status">
               Estado: {connectionStatus}
             </p>
-            {isPaused ? (
-              <p className="connection-status">Ploteo en pausa</p>
-            ) : null}
           </section>
 
           <section className="sidebar__section">
             <h2>Variables</h2>
             <div className="channel-table">
-              {channels.map((channel) => (
+              {visibleChannels.map((channel) => (
                 <div className="channel-row" key={channel.id}>
                   <span
                     className="channel-color"
@@ -358,8 +436,8 @@ export default function App() {
       </main>
 
       {modal ? (
-        <div className="modal-backdrop" onClick={closeModal}>
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal">
             <header className="modal__header">
               <h3>
                 {modal === "basic" && "Configuración básica"}
@@ -523,10 +601,50 @@ export default function App() {
                 <p>Exportación CSV pendiente de los datos reales.</p>
               ) : null}
               {modal === "save" ? (
-                <p>Guardado de perfil en JSON (pendiente de implementación).</p>
+                <div className="modal__form">
+                  <label>
+                    Configuración (JSON)
+                    <textarea
+                      rows={8}
+                      value={configText}
+                      onChange={(event) => setConfigText(event.target.value)}
+                    />
+                  </label>
+                  <div className="modal__actions">
+                    <button type="button" onClick={handleSaveConfig}>
+                      Guardar local
+                    </button>
+                    <button type="button" onClick={applyConfigText}>
+                      Aplicar JSON
+                    </button>
+                  </div>
+                  {configMessage ? (
+                    <p className="modal__hint">{configMessage}</p>
+                  ) : null}
+                </div>
               ) : null}
               {modal === "load" ? (
-                <p>Carga de perfil en JSON (pendiente de implementación).</p>
+                <div className="modal__form">
+                  <label>
+                    Configuración (JSON)
+                    <textarea
+                      rows={8}
+                      value={configText}
+                      onChange={(event) => setConfigText(event.target.value)}
+                    />
+                  </label>
+                  <div className="modal__actions">
+                    <button type="button" onClick={handleLoadConfig}>
+                      Cargar local
+                    </button>
+                    <button type="button" onClick={applyConfigText}>
+                      Aplicar JSON
+                    </button>
+                  </div>
+                  {configMessage ? (
+                    <p className="modal__hint">{configMessage}</p>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>
