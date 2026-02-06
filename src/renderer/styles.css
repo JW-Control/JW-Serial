@@ -5,12 +5,19 @@
   background-color: #f8fafc;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
 }
 
 button,
@@ -20,7 +27,7 @@ select {
 
 .app {
   display: flex;
-  min-height: 100vh;
+  height: 100%;
 }
 
 .sidebar {
@@ -100,6 +107,7 @@ select {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .main__toolbar {
@@ -149,6 +157,8 @@ select {
   display: grid;
   gap: 16px;
   background: #f8fafc;
+  grid-auto-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .plot {
@@ -159,7 +169,7 @@ select {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 180px;
+  min-height: 0;
 }
 
 .plot__header {
@@ -188,4 +198,97 @@ select {
   justify-content: center;
   color: #94a3b8;
   font-size: 12px;
+}
+
+.monitor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  gap: 16px;
+  min-height: 0;
+  background: #f8fafc;
+}
+
+.monitor__log {
+  flex: 1;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.monitor__placeholder {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.monitor__controls {
+  display: grid;
+  grid-template-columns: 1fr 220px auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.monitor__controls input,
+.monitor__controls select {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+}
+
+.monitor__controls button {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal {
+  width: min(520px, 100%);
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
+  border: 1px solid #e2e8f0;
+}
+
+.modal__header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.modal__header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal__header button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+.modal__body {
+  padding: 16px 20px 20px;
+  color: #475569;
+  font-size: 14px;
 }
