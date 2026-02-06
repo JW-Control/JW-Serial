@@ -6,7 +6,7 @@
   "main": "src/main/main.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint ."
@@ -22,6 +22,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.3",
     "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
     "electron": "^31.4.0",
     "eslint": "^9.12.0",
     "eslint-plugin-react": "^7.37.1",
