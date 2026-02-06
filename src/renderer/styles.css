@@ -241,6 +241,7 @@ input {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: relative;
 }
 
 .plot__header {
@@ -285,25 +286,32 @@ input {
 }
 
 
-.plot__resize-handle {
-  align-self: center;
-  border: 1px solid #cbd5f5;
-  background: #ffffff;
-  color: #64748b;
-  border-radius: 999px;
-  width: 34px;
-  height: 22px;
-  line-height: 1;
+.plot__resize-zone {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: -7px;
+  height: 14px;
   cursor: ns-resize;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
+  border-radius: 8px;
+  background: transparent;
 }
 
-.plot__resize-handle:hover {
-  background: #eff6ff;
-  color: #1d4ed8;
+.plot__resize-zone::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 3px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.plot:hover .plot__resize-zone::after,
+.plot__resize-zone:hover::after {
+  background: #cbd5f5;
 }
 
 .plot-menu {

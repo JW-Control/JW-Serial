@@ -75,6 +75,27 @@ const makeTicks = (minValue, maxValue, targetTicks = 6) => {
   return { ticks, min, max: safeMax, step };
 };
 
+const makeMinorTicks = (ticksData, divisions = 10) => {
+  if (!ticksData?.ticks?.length || !Number.isFinite(ticksData.step) || divisions <= 1) {
+    return [];
+  }
+
+  const minorStep = ticksData.step / divisions;
+  const start = ticksData.ticks[0];
+  const end = ticksData.ticks[ticksData.ticks.length - 1];
+  const values = [];
+
+  for (let tick = start; tick <= end + minorStep * 0.5; tick += minorStep) {
+    const rounded = Number(tick.toFixed(6));
+    const isMajor = ticksData.ticks.some((major) => Math.abs(major - rounded) < minorStep * 0.2);
+    if (!isMajor && rounded >= ticksData.min && rounded <= ticksData.max) {
+      values.push(rounded);
+    }
+  }
+
+  return values;
+};
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const normalizeAxisRange = (minValue, maxValue) => {
@@ -604,12 +625,12 @@ export default function App() {
 
   const renderPlot = (plot) => {
     const samples = historyRef.current;
-    const width = 1000;
-    const height = 280;
+    const layoutHeight = clamp(plot.height || 320, 240, 560);
+    const width = 1200;
+    const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
-    const chartHeight = Math.max(120, (plot.height || 320) - 90);
-    const yTargetTicks = clamp(Math.round(chartHeight / 56), 3, 7);
-    const xTargetTicks = clamp(Math.round(width / 140), 5, 9);
+    const yTargetTicks = clamp(Math.round(height / 56), 3, 7);
+    const xTargetTicks = clamp(Math.round(width / 150), 5, 10);
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -660,6 +681,10 @@ export default function App() {
     const xMax = Math.max(...xValues);
     const xRange = normalizeAxisRange(xMin, xMax);
     const xTicksData = makeTicks(xRange.min, xRange.max, xTargetTicks);
+
+    const xMinorTicks = makeMinorTicks(xTicksData, 10);
+    const y1MinorTicks = makeMinorTicks(y1TicksData, 10);
+    const y2MinorTicks = makeMinorTicks(y2TicksData, 10);
 
     const yTickToPx = (value, ticksData) => {
       const ratio = (value - ticksData.min) / (ticksData.max - ticksData.min || 1);
@@ -739,6 +764,51 @@ export default function App() {
           stroke="#94a3b8"
           strokeWidth="1"
         />
+
+        {xMinorTicks.map((tick) => {
+          const x = xTickToPx(tick);
+          return (
+            <line
+              key={`x-minor-${tick}`}
+              x1={x}
+              y1={padding.top}
+              x2={x}
+              y2={height - padding.bottom}
+              stroke="#f1f5f9"
+              strokeWidth="1"
+            />
+          );
+        })}
+
+        {y1MinorTicks.map((tick) => {
+          const y = yTickToPx(tick, y1TicksData);
+          return (
+            <line
+              key={`y1-minor-${tick}`}
+              x1={padding.left}
+              y1={y}
+              x2={width - padding.right}
+              y2={y}
+              stroke="#f8fafc"
+              strokeWidth="1"
+            />
+          );
+        })}
+
+        {y2MinorTicks.map((tick) => {
+          const y = yTickToPx(tick, y2TicksData);
+          return (
+            <line
+              key={`y2-minor-${tick}`}
+              x1={padding.left}
+              y1={y}
+              x2={width - padding.right}
+              y2={y}
+              stroke="#f8fafc"
+              strokeWidth="1"
+            />
+          );
+        })}
 
         {xTicksData.ticks.map((tick) => {
           const x = xTickToPx(tick);
@@ -992,17 +1062,13 @@ export default function App() {
                     {renderPlot(plot)}
                   </div>
 
-                  <button
-                    type="button"
-                    className="plot__resize-handle"
+                  <div
+                    className="plot__resize-zone"
                     onPointerDown={(event) => startResize(event, plot.id, plot.height)}
+                    role="separator"
                     aria-label="Resize plot vertically"
-                    title="Arrastra para cambiar altura"
-                  >
-                    ↕
-                  </button>
-
-
+                    title="Arrastra desde el borde inferior"
+                  />
 
                   {contextMenu?.plotId === plot.id ? (
                     <div
