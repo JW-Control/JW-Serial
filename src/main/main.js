@@ -1,7 +1,11 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { SerialPort } from "serialport";
+
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +56,66 @@ const parseLine = (line) => {
     values,
     raw: trimmed
   };
+};
+
+const parseWindowsPortNames = (text) => {
+  if (!text) {
+    return [];
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^COM\d+$/i.test(line))
+    .map((pathName) => pathName.toUpperCase());
+};
+
+const listWindowsPortsFallback = async () => {
+  if (process.platform !== "win32") {
+    return [];
+  }
+
+  try {
+    const { stdout } = await execFileAsync("powershell", [
+      "-NoProfile",
+      "-Command",
+      "[System.IO.Ports.SerialPort]::GetPortNames()"
+    ]);
+
+    return parseWindowsPortNames(stdout).map((portPath) => ({
+      path: portPath,
+      manufacturer: "",
+      serialNumber: ""
+    }));
+  } catch (_error) {
+    return [];
+  }
+};
+
+const normalizePort = (port) => ({
+  path: port.path,
+  manufacturer: port.manufacturer || "",
+  serialNumber: port.serialNumber || ""
+});
+
+const listAllPorts = async () => {
+  const serialPorts = await SerialPort.list();
+  const fallbackPorts = await listWindowsPortsFallback();
+  const merged = new Map();
+
+  serialPorts.map(normalizePort).forEach((port) => {
+    merged.set(port.path.toUpperCase(), port);
+  });
+
+  fallbackPorts.forEach((port) => {
+    if (!merged.has(port.path.toUpperCase())) {
+      merged.set(port.path.toUpperCase(), port);
+    }
+  });
+
+  return Array.from(merged.values()).sort((left, right) =>
+    left.path.localeCompare(right.path, undefined, { numeric: true })
+  );
 };
 
 const handleIncomingChunk = (chunk) => {
@@ -125,12 +189,7 @@ const createWindow = () => {
 };
 
 ipcMain.handle("serial:list", async () => {
-  const ports = await SerialPort.list();
-  return ports.map((port) => ({
-    path: port.path,
-    manufacturer: port.manufacturer || "",
-    serialNumber: port.serialNumber || ""
-  }));
+  return listAllPorts();
 });
 
 ipcMain.handle("serial:open", async (_event, options) => {
