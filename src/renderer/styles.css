@@ -226,11 +226,11 @@ input {
 .plots {
   flex: 1;
   padding: 20px 24px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   background: #f8fafc;
-  grid-auto-rows: minmax(0, 1fr);
-  overflow: hidden;
+  overflow: auto;
 }
 
 .plot {
@@ -241,7 +241,7 @@ input {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 0;
+  min-height: 220px;
 }
 
 .plot__header {
@@ -262,25 +262,9 @@ input {
 }
 
 
-.plot__controls {
-  display: grid;
-  grid-template-columns: 170px 90px auto 220px auto auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.plot__controls button {
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid #cbd5f5;
-  background: #f8fafc;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.plot__controls select {
-  font-size: 12px;
-  padding: 6px 8px;
+.plot__hint {
+  font-size: 11px;
+  color: #64748b;
 }
 
 .plot__canvas svg {
@@ -289,12 +273,49 @@ input {
 }
 .plot__canvas {
   flex: 1;
+  min-height: 180px;
   border-radius: 10px;
   border: 1px dashed #cbd5f5;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #94a3b8;
+  font-size: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.plot-menu {
+  position: fixed;
+  z-index: 50;
+  width: 320px;
+  background: #ffffff;
+  border: 1px solid #cbd5f5;
+  border-radius: 10px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.2);
+  padding: 10px;
+  display: grid;
+  gap: 12px;
+}
+
+.plot-menu__section {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.plot-menu__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.plot-menu button {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #f8fafc;
+  cursor: pointer;
   font-size: 12px;
 }
 

@@ -38,8 +38,53 @@ const buildPath = (points) =>
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(" ");
 
-const buildSeries = (samples, xValues, index, minY, maxY, height, width) => {
-  if (samples.length <= 1 || maxY - minY === 0) {
+const preferredSteps = [0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000];
+
+const pickStep = (range, targetTicks = 6) => {
+  if (range <= 0 || Number.isNaN(range)) {
+    return preferredSteps[0];
+  }
+  const target = range / targetTicks;
+  const found = preferredSteps.find((step) => step >= target);
+  if (found) {
+    return found;
+  }
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  return Math.ceil(target / magnitude) * magnitude;
+};
+
+const makeTicks = (minValue, maxValue, targetTicks = 6) => {
+  const min = Number.isFinite(minValue) ? minValue : 0;
+  const max = Number.isFinite(maxValue) ? maxValue : min + 1;
+  const safeMax = max === min ? min + 1 : max;
+  const step = pickStep(safeMax - min, targetTicks);
+  const start = Math.floor(min / step) * step;
+  const ticks = [];
+
+  for (let tick = start; tick <= safeMax + step; tick += step) {
+    if (tick >= min - step * 0.5 && tick <= safeMax + step * 0.5) {
+      ticks.push(Number(tick.toFixed(6)));
+    }
+  }
+
+  if (ticks.length < 2) {
+    ticks.push(Number((start + step).toFixed(6)));
+  }
+
+  return { ticks, min, max: safeMax };
+};
+
+const buildSeries = (
+  samples,
+  xValues,
+  index,
+  minY,
+  maxY,
+  height,
+  width,
+  padding
+) => {
+  if (samples.length <= 1) {
     return "";
   }
 
@@ -52,8 +97,11 @@ const buildSeries = (samples, xValues, index, minY, maxY, height, width) => {
     const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
     const normalizedY = (value - minY) / (maxY - minY || 1);
     return {
-      x: normalizedX * width,
-      y: height - normalizedY * height
+      x: padding.left + normalizedX * (width - padding.left - padding.right),
+      y:
+        height -
+        padding.bottom -
+        normalizedY * (height - padding.top - padding.bottom)
     };
   });
 
@@ -78,6 +126,7 @@ export default function App() {
   const [configText, setConfigText] = useState("");
   const [configMessage, setConfigMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
+  const [contextMenu, setContextMenu] = useState(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -141,6 +190,19 @@ export default function App() {
     }));
   };
 
+  const closeContextMenu = () => {
+    setContextMenu(null);
+  };
+
+  const openContextMenu = (event, plotId) => {
+    event.preventDefault();
+    setContextMenu({
+      plotId,
+      x: event.clientX,
+      y: event.clientY
+    });
+  };
+
   const addPlot = () => {
     setPlots((prev) => [...prev, createPlot(prev.length + 1)]);
   };
@@ -170,6 +232,7 @@ export default function App() {
         };
       })
     );
+    closeContextMenu();
   };
 
   const removeAssignment = (plotId) => {
@@ -191,12 +254,14 @@ export default function App() {
         };
       })
     );
+    closeContextMenu();
   };
 
   const clearAssignments = (plotId) => {
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, assignments: [] } : plot))
     );
+    closeContextMenu();
   };
 
   const closeModal = () => setModal(null);
@@ -381,9 +446,7 @@ export default function App() {
         return;
       }
 
-      const incomingValues = frame.includeTimestamp
-        ? frame.values.slice(1)
-        : frame.values;
+      const incomingValues = frame.values;
       const xValue = frame.includeTimestamp ? frame.values[0] : null;
       const channelCount =
         basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
@@ -451,10 +514,21 @@ export default function App() {
     }
   }, [modal]);
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return undefined;
+    }
+
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [contextMenu]);
+
   const renderPlot = (plot) => {
     const samples = historyRef.current.slice(-600);
     const width = 1000;
     const height = 260;
+    const padding = { top: 10, right: 52, bottom: 26, left: 52 };
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -493,10 +567,31 @@ export default function App() {
       });
     });
 
+    const y1TicksData = makeTicks(axisStats.y1.min, axisStats.y1.max, 6);
+    const y2TicksData = Number.isFinite(axisStats.y2.min)
+      ? makeTicks(axisStats.y2.min, axisStats.y2.max, 6)
+      : y1TicksData;
+
+    const xTicksData = makeTicks(Math.min(...xValues), Math.max(...xValues), 8);
+
+    const yTickToPx = (value, ticksData) => {
+      const ratio = (value - ticksData.min) / (ticksData.max - ticksData.min || 1);
+      return (
+        height -
+        padding.bottom -
+        ratio * (height - padding.top - padding.bottom)
+      );
+    };
+
+    const xTickToPx = (value) => {
+      const ratio = (value - xTicksData.min) / (xTicksData.max - xTicksData.min || 1);
+      return padding.left + ratio * (width - padding.left - padding.right);
+    };
+
     const lines = yAssignments
       .map((assignment) => {
         const idx = channelIndex(assignment.channelId);
-        const stats = axisStats[assignment.axis];
+        const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
         }
@@ -508,7 +603,8 @@ export default function App() {
           stats.min,
           stats.max,
           height,
-          width
+          width,
+          padding
         );
         if (!path) {
           return null;
@@ -532,6 +628,96 @@ export default function App() {
     return (
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
+        <line
+          x1={padding.left}
+          y1={height - padding.bottom}
+          x2={width - padding.right}
+          y2={height - padding.bottom}
+          stroke="#94a3b8"
+          strokeWidth="1"
+        />
+        <line
+          x1={padding.left}
+          y1={padding.top}
+          x2={padding.left}
+          y2={height - padding.bottom}
+          stroke="#94a3b8"
+          strokeWidth="1"
+        />
+        <line
+          x1={width - padding.right}
+          y1={padding.top}
+          x2={width - padding.right}
+          y2={height - padding.bottom}
+          stroke="#94a3b8"
+          strokeWidth="1"
+        />
+
+        {xTicksData.ticks.map((tick) => {
+          const x = xTickToPx(tick);
+          return (
+            <g key={`x-${tick}`}>
+              <line
+                x1={x}
+                y1={padding.top}
+                x2={x}
+                y2={height - padding.bottom}
+                stroke="#e2e8f0"
+                strokeWidth="1"
+              />
+              <text
+                x={x}
+                y={height - 6}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#64748b"
+              >
+                {Number(tick.toFixed(2))}
+              </text>
+            </g>
+          );
+        })}
+
+        {y1TicksData.ticks.map((tick) => {
+          const y = yTickToPx(tick, y1TicksData);
+          return (
+            <g key={`y1-${tick}`}>
+              <line
+                x1={padding.left}
+                y1={y}
+                x2={width - padding.right}
+                y2={y}
+                stroke="#eef2ff"
+                strokeWidth="1"
+              />
+              <text
+                x={padding.left - 6}
+                y={y + 3}
+                textAnchor="end"
+                fontSize="10"
+                fill="#64748b"
+              >
+                {Number(tick.toFixed(2))}
+              </text>
+            </g>
+          );
+        })}
+
+        {y2TicksData.ticks.map((tick) => {
+          const y = yTickToPx(tick, y2TicksData);
+          return (
+            <text
+              key={`y2-${tick}`}
+              x={width - padding.right + 6}
+              y={y + 3}
+              textAnchor="start"
+              fontSize="10"
+              fill="#64748b"
+            >
+              {Number(tick.toFixed(2))}
+            </text>
+          );
+        })}
         {lines}
       </svg>
     );
@@ -711,50 +897,73 @@ export default function App() {
                     </div>
                   </header>
 
-                  <div className="plot__controls">
-                    <select
-                      value={draft.channelId}
-                      onChange={(event) => setDraft(plot.id, { channelId: event.target.value })}
-                    >
-                      {visibleChannels.map((channel) => (
-                        <option key={channel.id} value={channel.id}>
-                          {channel.name}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={draft.axis}
-                      onChange={(event) => setDraft(plot.id, { axis: event.target.value })}
-                    >
-                      <option value="x">X</option>
-                      <option value="y1">Y1</option>
-                      <option value="y2">Y2</option>
-                    </select>
-                    <button type="button" onClick={() => addAssignment(plot.id)}>
-                      Add channel
-                    </button>
-                    <select
-                      value={draft.removeKey}
-                      onChange={(event) =>
-                        setDraft(plot.id, { removeKey: event.target.value })
-                      }
-                    >
-                      <option value="">Seleccionar para remover</option>
-                      {assignmentOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                    <button type="button" onClick={() => removeAssignment(plot.id)}>
-                      Remove
-                    </button>
-                    <button type="button" onClick={() => clearAssignments(plot.id)}>
-                      Remove all
-                    </button>
+                  <div className="plot__hint">Click derecho dentro del área para gestionar canales</div>
+                  <div
+                    className="plot__canvas"
+                    onContextMenu={(event) => openContextMenu(event, plot.id)}
+                  >
+                    {renderPlot(plot)}
                   </div>
 
-                  <div className="plot__canvas">{renderPlot(plot)}</div>
+                  {contextMenu?.plotId === plot.id ? (
+                    <div
+                      className="plot-menu"
+                      style={{ left: contextMenu.x, top: contextMenu.y }}
+                    >
+                      <div className="plot-menu__section">
+                        <strong>Add channel</strong>
+                        <select
+                          value={draft.channelId}
+                          onChange={(event) => setDraft(plot.id, { channelId: event.target.value })}
+                        >
+                          {visibleChannels.map((channel) => (
+                            <option key={channel.id} value={channel.id}>
+                              {channel.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={draft.axis}
+                          onChange={(event) => setDraft(plot.id, { axis: event.target.value })}
+                        >
+                          <option value="x">X</option>
+                          <option value="y1">Y1</option>
+                          <option value="y2">Y2</option>
+                        </select>
+                        <button type="button" onClick={() => addAssignment(plot.id)}>
+                          Add
+                        </button>
+                      </div>
+
+                      <div className="plot-menu__section">
+                        <strong>Remove channel</strong>
+                        <select
+                          value={draft.removeKey}
+                          onChange={(event) =>
+                            setDraft(plot.id, { removeKey: event.target.value })
+                          }
+                        >
+                          <option value="">Seleccionar para remover</option>
+                          {assignmentOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="plot-menu__actions">
+                          <button type="button" onClick={() => removeAssignment(plot.id)}>
+                            Remove
+                          </button>
+                          <button type="button" onClick={() => clearAssignments(plot.id)}>
+                            Remove all
+                          </button>
+                          <button type="button" onClick={closeContextMenu}>
+                            Cerrar
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
               );
             })}
