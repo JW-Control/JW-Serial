@@ -13,6 +13,12 @@ const defaultPlots = [
   { id: "plot-2", title: "Plot 2", channels: ["val2", "val3"] }
 ];
 
+const commonBaudRates = [
+  300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600,
+  74880, 115200, 128000, 230400, 250000, 460800, 500000, 921600, 1000000,
+  1500000, 2000000
+];
+
 const normalizeChannels = (count, previous) => {
   const safeCount = Math.max(1, count);
   const base = createDefaultChannels(safeCount);
@@ -32,6 +38,7 @@ export default function App() {
   const [monitorLog, setMonitorLog] = useState([]);
   const [ports, setPorts] = useState([]);
   const [selectedPort, setSelectedPort] = useState("");
+  const [manualPort, setManualPort] = useState("COM3");
   const [baudRate, setBaudRate] = useState(115200);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isPaused, setIsPaused] = useState(false);
@@ -154,20 +161,28 @@ export default function App() {
       if (!selectedPort && nextPorts.length > 0) {
         setSelectedPort(nextPorts[0].path);
       }
+      if (nextPorts.length === 0) {
+        appendLog("SYS > No se detectaron puertos. Puedes ingresar uno manualmente (ej: COM7).");
+      } else {
+        appendLog(`SYS > ${nextPorts.length} puerto(s) detectado(s).`);
+      }
     } catch (_error) {
       setPorts([]);
+      appendLog("SYS > Error al listar puertos seriales.");
     }
   };
 
   const handleConnect = async () => {
-    if (!selectedPort) {
+    const targetPort = selectedPort || manualPort.trim();
+    if (!targetPort) {
+      appendLog("SYS > Selecciona o ingresa un puerto antes de conectar.");
       return;
     }
 
     try {
       setConnectionStatus("connecting");
       await window.jwSerial.openPort({
-        path: selectedPort,
+        path: targetPort,
         baudRate,
         dataBits: advancedConfig.dataBits,
         parity: advancedConfig.parity,
@@ -253,6 +268,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (
+      !window.jwSerial?.onFrame ||
+      !window.jwSerial?.onRawLine ||
+      !window.jwSerial?.onStatus
+    ) {
+      appendLog("SYS > API serial no disponible en renderer (preload).\n");
+      return undefined;
+    }
+
     const unsubscribeFrame = window.jwSerial.onFrame((frame) => {
       if (isPaused) {
         return;
@@ -365,15 +389,28 @@ export default function App() {
                 )}
               </select>
             </label>
+            {ports.length === 0 ? (
+              <label className="field">
+                Puerto manual
+                <input
+                  type="text"
+                  value={manualPort}
+                  onChange={(event) => setManualPort(event.target.value)}
+                  placeholder="COM7"
+                />
+              </label>
+            ) : null}
             <label className="field">
               Baudrate
               <select
                 value={baudRate}
                 onChange={(event) => setBaudRate(Number(event.target.value))}
               >
-                <option value={9600}>9600</option>
-                <option value={115200}>115200</option>
-                <option value={230400}>230400</option>
+                {commonBaudRates.map((rate) => (
+                  <option key={rate} value={rate}>
+                    {rate}
+                  </option>
+                ))}
               </select>
             </label>
             <div className="connection-actions">

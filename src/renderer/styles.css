@@ -21,8 +21,16 @@ body {
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
+}
+
+select,
+input {
+  border: 1px solid #94a3b8;
+  border-radius: 6px;
+  padding: 4px 8px;
 }
 
 .app {
