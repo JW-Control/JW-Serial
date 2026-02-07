@@ -119,9 +119,9 @@ const makeXTicks = (minValue, maxValue, targetTicks = 8) => {
 
 const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
   const span = Math.max(1, maxValue - minValue);
-  const targetTicks = clamp(Math.floor(pixelHeight / 64), 1, 9);
+  const targetTicks = clamp(Math.floor(pixelHeight / 28), 5, 16);
 
-  if (targetTicks <= 1) {
+  if (targetTicks <= 2) {
     const step = pickStep(span, 2);
     const centered = Number((Math.round(((minValue + maxValue) * 0.5) / step) * step).toFixed(6));
     return { ticks: [centered], min: minValue, max: maxValue, step };
@@ -159,6 +159,21 @@ const normalizeAxisRange = (minValue, maxValue) => {
 
   const span = maxValue - minValue;
   const pad = span * 0.12;
+  return { min: minValue - pad, max: maxValue + pad };
+};
+
+const normalizeYAxisRange = (minValue, maxValue) => {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return { min: 0, max: 1 };
+  }
+
+  if (minValue === maxValue) {
+    const pad = Math.max(Math.abs(minValue) * 0.05, 0.1);
+    return { min: minValue - pad, max: maxValue + pad };
+  }
+
+  const span = maxValue - minValue;
+  const pad = Math.max(span * 0.06, 0.05);
   return { min: minValue - pad, max: maxValue + pad };
 };
 
@@ -727,9 +742,9 @@ export default function App() {
       });
     });
 
-    const y1Range = normalizeAxisRange(axisStats.y1.min, axisStats.y1.max);
+    const y1Range = normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max);
     const y2Range = Number.isFinite(axisStats.y2.min)
-      ? normalizeAxisRange(axisStats.y2.min, axisStats.y2.max)
+      ? normalizeYAxisRange(axisStats.y2.min, axisStats.y2.max)
       : y1Range;
 
     const y1TicksData = makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom);
@@ -758,9 +773,9 @@ export default function App() {
       return padding.left + ratio * (width - padding.left - padding.right);
     };
 
-    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 15)
+    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 10)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y1TicksData.step) !== formatTick(arr[index - 1], y1TicksData.step));
-    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 15)
+    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 10)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y2TicksData.step) !== formatTick(arr[index - 1], y2TicksData.step));
     const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 64)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, xTicksData.step) !== formatTick(arr[index - 1], xTicksData.step));
@@ -839,7 +854,7 @@ export default function App() {
               y1={padding.top}
               x2={x}
               y2={height - padding.bottom}
-              stroke="#e2e8f0"
+              stroke="#e9eef8"
               strokeWidth="1"
             />
           );
@@ -854,7 +869,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#eef2ff"
+              stroke="#f3f6fd"
               strokeWidth="1"
             />
           );
@@ -869,7 +884,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#eef2ff"
+              stroke="#f3f6fd"
               strokeWidth="1"
             />
           );
@@ -884,8 +899,8 @@ export default function App() {
                 y1={padding.top}
                 x2={x}
                 y2={height - padding.bottom}
-                stroke="#e2e8f0"
-                strokeWidth="1"
+                stroke="#b6c6db"
+                strokeWidth="1.15"
               />
               <text
                 x={x}
@@ -909,8 +924,8 @@ export default function App() {
                 y1={y}
                 x2={width - padding.right}
                 y2={y}
-                stroke="#eef2ff"
-                strokeWidth="1"
+                stroke="#bfdbfe"
+                strokeWidth="1.15"
               />
               <text
                 x={padding.left - 8}
