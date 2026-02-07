@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+const channelPalette = ["#ef4444", "#d97706", "#c0ca33", "#65a30d", "#0ea5e9", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#64748b"];
+
 const createDefaultChannels = (count) =>
   Array.from({ length: count }, (_, index) => ({
     id: `val${index}`,
     name: `val${index}`,
-    color: `hsl(${index * 32} 70% 50%)`,
+    color: channelPalette[index % channelPalette.length],
+    lineStyle: "solid",
+    thickness: 2,
     value: 0
   }));
 
@@ -12,7 +16,22 @@ const createPlot = (index) => ({
   id: `plot-${index}`,
   title: `Plot ${index}`,
   assignments: [],
-  height: 320
+  height: 320,
+  statsWindowUnit: "samples",
+  statsWindowValue: 400,
+  xMode: "auto",
+  y1Mode: "auto",
+  y2Mode: "auto",
+  xManualMin: 0,
+  xManualMax: 100,
+  xWindowSize: 400,
+  y1ManualMin: 0,
+  y1ManualMax: 1,
+  y2ManualMin: 0,
+  y2ManualMax: 1,
+  statAvg: false,
+  statMin: false,
+  statMax: false
 });
 
 const defaultPlots = [createPlot(1), createPlot(2)];
@@ -33,6 +52,12 @@ const normalizeChannels = (count, previous) => {
 };
 
 const channelIndex = (channelId) => Number(channelId.replace("val", ""));
+
+const dashByStyle = {
+  solid: "",
+  dashed: "8 4",
+  dotted: "2 4"
+};
 
 const buildPath = (points) =>
   points
@@ -253,7 +278,9 @@ export default function App() {
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
+  const [variableMenu, setVariableMenu] = useState(null);
   const menuRef = useRef(null);
+  const variableMenuRef = useRef(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -320,6 +347,32 @@ export default function App() {
     setContextMenu(null);
   };
 
+  const closeVariableMenu = () => {
+    setVariableMenu(null);
+  };
+
+  const updateChannel = (channelId, patch) => {
+    setChannels((prev) =>
+      prev.map((channel) => (channel.id === channelId ? { ...channel, ...patch } : channel))
+    );
+  };
+
+  const updatePlotSettings = (plotId, patch) => {
+    setPlots((prev) =>
+      prev.map((plot) => (plot.id === plotId ? { ...plot, ...patch } : plot))
+    );
+  };
+
+  const openVariableMenu = (event, channelId) => {
+    event.preventDefault();
+    const menuWidth = 250;
+    const menuHeight = 236;
+    const x = clamp(event.clientX, 8, window.innerWidth - menuWidth - 8);
+    const y = clamp(event.clientY, 8, window.innerHeight - menuHeight - 8);
+    setVariableMenu({ channelId, x, y });
+    setContextMenu(null);
+  };
+
 
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
@@ -332,6 +385,7 @@ export default function App() {
       x,
       y
     });
+    setVariableMenu(null);
   };
 
   const addPlot = () => {
@@ -662,20 +716,21 @@ export default function App() {
   }, [modal]);
 
   useEffect(() => {
-    if (!contextMenu) {
+    if (!contextMenu && !variableMenu) {
       return undefined;
     }
 
     const close = (event) => {
-      if (menuRef.current?.contains(event.target)) {
+      if (menuRef.current?.contains(event.target) || variableMenuRef.current?.contains(event.target)) {
         return;
       }
       setContextMenu(null);
+      setVariableMenu(null);
     };
 
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
-  }, [contextMenu]);
+  }, [contextMenu, variableMenu]);
 
   useEffect(() => {
     if (!plotResize) {
@@ -698,7 +753,9 @@ export default function App() {
   }, [plotResize]);
 
   const renderPlot = (plot) => {
-    const samples = historyRef.current;
+    const allSamples = historyRef.current;
+    const sampleWindowSize = Math.max(2, Number(plot.xWindowSize || plot.statsWindowValue || 400));
+    const samples = plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = 1200;
     const height = Math.max(180, layoutHeight - 88);
@@ -742,10 +799,24 @@ export default function App() {
       });
     });
 
-    const y1Range = normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max);
-    const y2Range = Number.isFinite(axisStats.y2.min)
+    const y1AutoRange = normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max);
+    const y2AutoRange = Number.isFinite(axisStats.y2.min)
       ? normalizeYAxisRange(axisStats.y2.min, axisStats.y2.max)
-      : y1Range;
+      : y1AutoRange;
+
+    const y1Range = plot.y1Mode === "manual"
+      ? {
+          min: Number(plot.y1ManualMin ?? y1AutoRange.min),
+          max: Number(plot.y1ManualMax ?? y1AutoRange.max)
+        }
+      : y1AutoRange;
+
+    const y2Range = plot.y2Mode === "manual"
+      ? {
+          min: Number(plot.y2ManualMin ?? y2AutoRange.min),
+          max: Number(plot.y2ManualMax ?? y2AutoRange.max)
+        }
+      : y2AutoRange;
 
     const y1TicksData = makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom);
     const y2TicksData = makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom);
@@ -753,7 +824,9 @@ export default function App() {
     const xMin = Math.min(...xValues);
     const xMax = Math.max(...xValues);
     const rightPad = (xMax - xMin || 1) * 0.05;
-    const xTicksData = makeXTicks(xMin, xMax + rightPad, xTargetTicks);
+    const xTicksData = plot.xMode === "manual"
+      ? makeXTicks(Number(plot.xManualMin ?? xMin), Number(plot.xManualMax ?? xMax), xTargetTicks)
+      : makeXTicks(xMin, xMax + rightPad, xTargetTicks);
 
     const xMinorTicks = makeMinorTicks(xTicksData, 10);
     const y1MinorTicks = makeMinorTicks(y1TicksData, 10);
@@ -780,6 +853,16 @@ export default function App() {
     const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 64)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, xTicksData.step) !== formatTick(arr[index - 1], xTicksData.step));
 
+    const getStatWindow = () => {
+      const rawValue = Math.max(2, Number(plot.statsWindowValue || 400));
+      if (plot.statsWindowUnit === "seconds") {
+        return Math.max(2, Math.round(rawValue * basicConfig.samplesPerSecond));
+      }
+      return rawValue;
+    };
+
+    const statWindowSamples = getStatWindow();
+    const statSamples = samples.slice(-statWindowSamples);
     const lines = yAssignments
       .map((assignment) => {
         const idx = channelIndex(assignment.channelId);
@@ -803,19 +886,74 @@ export default function App() {
         }
 
         const channel = channels[idx];
+        const style = channel?.lineStyle || "solid";
+        const thickness = Number(channel?.thickness || 2);
         return (
           <path
             key={`${assignment.channelId}-${assignment.axis}`}
             d={path}
             fill="none"
             stroke={channel?.color || "#2563eb"}
-            strokeWidth={assignment.axis === "y2" ? 1.5 : 2}
-            strokeDasharray={assignment.axis === "y2" ? "6 4" : ""}
+            strokeWidth={Math.max(1, thickness)}
+            strokeDasharray={dashByStyle[style] || ""}
             opacity="0.95"
           />
         );
       })
       .filter(Boolean);
+
+    const statCurves = yAssignments
+      .map((assignment) => {
+        if (!plot.statAvg && !plot.statMin && !plot.statMax) {
+          return [];
+        }
+
+        const idx = channelIndex(assignment.channelId);
+        const values = statSamples
+          .map((sample) => sample.values[idx])
+          .filter((value) => value !== undefined);
+
+        if (values.length === 0) {
+          return [];
+        }
+
+        const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
+        const channel = channels[idx];
+        const baseColor = channel?.color || "#2563eb";
+        const xStart = padding.left;
+        const xEnd = width - padding.right;
+        const curves = [];
+
+        const pushCurve = (suffix, yValue, opacity) => {
+          const y = yTickToPx(yValue, stats);
+          curves.push(
+            <line
+              key={`${assignment.channelId}-${assignment.axis}-${suffix}`}
+              x1={xStart}
+              y1={y}
+              x2={xEnd}
+              y2={y}
+              stroke={baseColor}
+              strokeOpacity={opacity}
+              strokeWidth="1"
+            />
+          );
+        };
+
+        if (plot.statAvg) {
+          const avg = values.reduce((acc, value) => acc + value, 0) / values.length;
+          pushCurve("avg", avg, 0.9);
+        }
+        if (plot.statMin) {
+          pushCurve("min", Math.min(...values), 0.55);
+        }
+        if (plot.statMax) {
+          pushCurve("max", Math.max(...values), 0.55);
+        }
+
+        return curves;
+      })
+      .flat();
 
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
@@ -956,6 +1094,7 @@ export default function App() {
           );
         })}
         {lines}
+        {statCurves}
       </svg>
     );
   };
@@ -1045,7 +1184,7 @@ export default function App() {
             <h2>Variables</h2>
             <div className="channel-table">
               {visibleChannels.map((channel) => (
-                <div className="channel-row" key={channel.id}>
+                <div className="channel-row" key={channel.id} onContextMenu={(event) => openVariableMenu(event, channel.id)}>
                   <span
                     className="channel-color"
                     style={{ backgroundColor: channel.color }}
@@ -1136,10 +1275,8 @@ export default function App() {
                 <section className="plot" key={plot.id} style={{ height: `${plot.height || 320}px` }}>
                   <header className="plot__header">
                     <h3>{plot.title}</h3>
-                    <div className="plot__legend">{legendEntries.length} señal(es)</div>
                   </header>
 
-                  <div className="plot__hint">Click derecho dentro del área para gestionar canales</div>
                   <div
                     className="plot__canvas"
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
@@ -1151,11 +1288,16 @@ export default function App() {
                         <span>Sin señales</span>
                       ) : (
                         legendEntries.map((entry) => (
-                          <div key={entry.key} className="plot__legend-row">
+                          <button
+                            key={entry.key}
+                            type="button"
+                            className="plot__legend-row"
+                            onContextMenu={(event) => openVariableMenu(event, entry.key.split("-")[0])}
+                          >
                             <span className="plot__legend-dot" style={{ backgroundColor: entry.color }} />
                             <span>{entry.name}</span>
                             <span className="plot__legend-axis">{entry.axis}</span>
-                          </div>
+                          </button>
                         ))
                       )}
                     </div>
@@ -1226,6 +1368,80 @@ export default function App() {
                             Cerrar
                           </button>
                         </div>
+                      </div>
+
+                      <div className="plot-menu__section">
+                        <strong>Stat curves</strong>
+                        <div className="plot-menu__inline-fields">
+                          <select
+                            value={plot.statsWindowUnit}
+                            onChange={(event) => updatePlotSettings(plot.id, { statsWindowUnit: event.target.value })}
+                          >
+                            <option value="samples">Muestras</option>
+                            <option value="seconds">Segundos</option>
+                          </select>
+                          <input
+                            type="number"
+                            min="2"
+                            value={plot.statsWindowValue}
+                            onChange={(event) => updatePlotSettings(plot.id, { statsWindowValue: Math.max(2, Number(event.target.value) || 2) })}
+                          />
+                        </div>
+                        <label><input type="checkbox" checked={plot.statAvg} onChange={(event) => updatePlotSettings(plot.id, { statAvg: event.target.checked })} /> Promedio</label>
+                        <label><input type="checkbox" checked={plot.statMin} onChange={(event) => updatePlotSettings(plot.id, { statMin: event.target.checked })} /> Mínimo</label>
+                        <label><input type="checkbox" checked={plot.statMax} onChange={(event) => updatePlotSettings(plot.id, { statMax: event.target.checked })} /> Máximo</label>
+                      </div>
+
+                      <div className="plot-menu__section">
+                        <strong>Modes</strong>
+                        <label>
+                          X mode
+                          <select value={plot.xMode} onChange={(event) => updatePlotSettings(plot.id, { xMode: event.target.value })}>
+                            <option value="auto">Automático</option>
+                            <option value="window">Ventana deslizante</option>
+                            <option value="manual">Manual</option>
+                          </select>
+                        </label>
+                        {plot.xMode === "manual" ? (
+                          <div className="plot-menu__inline-fields">
+                            <input type="number" value={plot.xManualMin} onChange={(event) => updatePlotSettings(plot.id, { xManualMin: Number(event.target.value) || 0 })} />
+                            <input type="number" value={plot.xManualMax} onChange={(event) => updatePlotSettings(plot.id, { xManualMax: Number(event.target.value) || 1 })} />
+                          </div>
+                        ) : null}
+                        {plot.xMode === "window" ? (
+                          <input
+                            type="number"
+                            min="2"
+                            value={plot.xWindowSize}
+                            onChange={(event) => updatePlotSettings(plot.id, { xWindowSize: Math.max(2, Number(event.target.value) || 2) })}
+                          />
+                        ) : null}
+                        <label>
+                          Y1 mode
+                          <select value={plot.y1Mode} onChange={(event) => updatePlotSettings(plot.id, { y1Mode: event.target.value })}>
+                            <option value="auto">Automático</option>
+                            <option value="manual">Manual</option>
+                          </select>
+                        </label>
+                        {plot.y1Mode === "manual" ? (
+                          <div className="plot-menu__inline-fields">
+                            <input type="number" value={plot.y1ManualMin} onChange={(event) => updatePlotSettings(plot.id, { y1ManualMin: Number(event.target.value) || 0 })} />
+                            <input type="number" value={plot.y1ManualMax} onChange={(event) => updatePlotSettings(plot.id, { y1ManualMax: Number(event.target.value) || 1 })} />
+                          </div>
+                        ) : null}
+                        <label>
+                          Y2 mode
+                          <select value={plot.y2Mode} onChange={(event) => updatePlotSettings(plot.id, { y2Mode: event.target.value })}>
+                            <option value="auto">Automático</option>
+                            <option value="manual">Manual</option>
+                          </select>
+                        </label>
+                        {plot.y2Mode === "manual" ? (
+                          <div className="plot-menu__inline-fields">
+                            <input type="number" value={plot.y2ManualMin} onChange={(event) => updatePlotSettings(plot.id, { y2ManualMin: Number(event.target.value) || 0 })} />
+                            <input type="number" value={plot.y2ManualMax} onChange={(event) => updatePlotSettings(plot.id, { y2ManualMax: Number(event.target.value) || 1 })} />
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
@@ -1444,6 +1660,67 @@ export default function App() {
               ) : null}
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {variableMenu ? (
+        <div
+          ref={variableMenuRef}
+          className="variable-menu"
+          style={{ left: variableMenu.x, top: variableMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <strong>Variable</strong>
+          {(() => {
+            const channel = channels.find((item) => item.id === variableMenu.channelId);
+            if (!channel) {
+              return <span>No disponible</span>;
+            }
+
+            return (
+              <>
+                <label>
+                  Nombre
+                  <input
+                    type="text"
+                    value={channel.name}
+                    onChange={(event) => updateChannel(channel.id, { name: event.target.value || channel.id })}
+                  />
+                </label>
+                <label>
+                  Color
+                  <input
+                    type="color"
+                    value={channel.color}
+                    onChange={(event) => updateChannel(channel.id, { color: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Estilo
+                  <select
+                    value={channel.lineStyle || "solid"}
+                    onChange={(event) => updateChannel(channel.id, { lineStyle: event.target.value })}
+                  >
+                    <option value="solid">Sólida</option>
+                    <option value="dashed">Discontinua</option>
+                    <option value="dotted">Punteada</option>
+                  </select>
+                </label>
+                <label>
+                  Grosor
+                  <input
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={channel.thickness || 2}
+                    onChange={(event) => updateChannel(channel.id, { thickness: clamp(Number(event.target.value) || 2, 1, 8) })}
+                  />
+                </label>
+                <button type="button" onClick={closeVariableMenu}>Cerrar</button>
+              </>
+            );
+          })()}
         </div>
       ) : null}
     </div>
