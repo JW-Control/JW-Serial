@@ -101,17 +101,33 @@ const makeXTicks = (minValue, maxValue, targetTicks = 8) => {
   const max = Number.isFinite(maxValue) ? maxValue : min + 1;
   const safeMax = max <= min ? min + 1 : max;
   const step = pickStep(safeMax - min, targetTicks);
-  const ticks = [Number(min.toFixed(6))];
+  const start = Math.ceil(min / step) * step;
+  const ticks = [];
 
-  for (let tick = min + step; tick <= safeMax + step * 0.5; tick += step) {
-    ticks.push(Number(Math.min(tick, safeMax).toFixed(6)));
+  for (let tick = start; tick <= safeMax + step * 0.0001; tick += step) {
+    if (tick >= min && tick <= safeMax) {
+      ticks.push(Number(tick.toFixed(6)));
+    }
   }
 
-  if (ticks.length === 1 || ticks[ticks.length - 1] < safeMax) {
-    ticks.push(Number(safeMax.toFixed(6)));
+  if (ticks.length === 0) {
+    ticks.push(Number((Math.round(min / step) * step).toFixed(6)));
   }
 
-  return { ticks: [...new Set(ticks)], min, max: safeMax, step };
+  return { ticks, min, max: safeMax, step };
+};
+
+const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
+  const span = Math.max(1, maxValue - minValue);
+  const targetTicks = clamp(Math.floor(pixelHeight / 64), 1, 9);
+
+  if (targetTicks <= 1) {
+    const step = pickStep(span, 2);
+    const centered = Number((Math.round(((minValue + maxValue) * 0.5) / step) * step).toFixed(6));
+    return { ticks: [centered], min: minValue, max: maxValue, step };
+  }
+
+  return makeTicks(minValue, maxValue, targetTicks);
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -139,7 +155,10 @@ const formatTick = (value, step) => {
     return Math.round(value).toString();
   }
   if (step >= 1) {
-    return value.toFixed(1).replace(/\.0$/, "");
+    return Math.round(value).toString();
+  }
+  if (step >= 0.5) {
+    return value.toFixed(1).replace(/0+$/, "").replace(/\.$/, "");
   }
   if (step >= 0.1) {
     return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
@@ -647,8 +666,7 @@ export default function App() {
     const width = 1200;
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
-    const yTargetTicks = clamp(Math.round(height / 56), 3, 7);
-    const xTargetTicks = clamp(Math.round(width / 150), 5, 10);
+    const xTargetTicks = clamp(Math.floor(width / 180), 3, 10);
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -692,12 +710,12 @@ export default function App() {
       ? normalizeAxisRange(axisStats.y2.min, axisStats.y2.max)
       : y1Range;
 
-    const y1TicksData = makeTicks(y1Range.min, y1Range.max, yTargetTicks);
-    const y2TicksData = makeTicks(y2Range.min, y2Range.max, yTargetTicks);
+    const y1TicksData = makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom);
+    const y2TicksData = makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom);
 
     const xMin = Math.min(...xValues);
     const xMax = Math.max(...xValues);
-    const rightPad = (xMax - xMin || 1) * 0.08;
+    const rightPad = (xMax - xMin || 1) * 0.05;
     const xTicksData = makeXTicks(xMin, xMax + rightPad, xTargetTicks);
 
     const xMinorTicks = makeMinorTicks(xTicksData, 10);
@@ -844,7 +862,7 @@ export default function App() {
                 x={x}
                 y={height - 6}
                 textAnchor="middle"
-                fontSize="10"
+                fontSize="11px"
                 fill="#64748b"
               >
                 {formatTick(tick, xTicksData.step)}
@@ -869,7 +887,7 @@ export default function App() {
                 x={padding.left - 8}
                 y={y + 3}
                 textAnchor="end"
-                fontSize="10"
+                fontSize="11px"
                 fill="#64748b"
               >
                 {formatTick(tick, y1TicksData.step)}
@@ -886,7 +904,7 @@ export default function App() {
               x={width - 8}
               y={y + 3}
               textAnchor="end"
-              fontSize="10"
+              fontSize="11px"
               fill="#64748b"
             >
               {formatTick(tick, y2TicksData.step)}
