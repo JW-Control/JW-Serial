@@ -81,8 +81,8 @@ const makeMinorTicks = (ticksData, divisions = 10) => {
   }
 
   const minorStep = ticksData.step / divisions;
-  const start = ticksData.ticks[0];
-  const end = ticksData.ticks[ticksData.ticks.length - 1];
+  const start = Math.floor(ticksData.min / ticksData.step) * ticksData.step;
+  const end = ticksData.max;
   const values = [];
 
   for (let tick = start; tick <= end + minorStep * 0.5; tick += minorStep) {
@@ -758,9 +758,9 @@ export default function App() {
       return padding.left + ratio * (width - padding.left - padding.right);
     };
 
-    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 20)
+    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 15)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y1TicksData.step) !== formatTick(arr[index - 1], y1TicksData.step));
-    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 20)
+    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 15)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y2TicksData.step) !== formatTick(arr[index - 1], y2TicksData.step));
     const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 64)
       .filter((tick, index, arr) => index === 0 || formatTick(tick, xTicksData.step) !== formatTick(arr[index - 1], xTicksData.step));
@@ -839,7 +839,7 @@ export default function App() {
               y1={padding.top}
               x2={x}
               y2={height - padding.bottom}
-              stroke="#f1f5f9"
+              stroke="#e2e8f0"
               strokeWidth="1"
             />
           );
@@ -854,7 +854,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#f8fafc"
+              stroke="#eef2ff"
               strokeWidth="1"
             />
           );
@@ -869,7 +869,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#f8fafc"
+              stroke="#eef2ff"
               strokeWidth="1"
             />
           );

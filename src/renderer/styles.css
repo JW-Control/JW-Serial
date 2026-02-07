@@ -245,6 +245,7 @@ input {
   flex-direction: column;
   gap: 12px;
   position: relative;
+  flex: 0 0 auto;
 }
 
 .plot__header {
