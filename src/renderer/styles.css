@@ -228,7 +228,7 @@ input {
   padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
   padding-bottom: 72px;
   background: #f8fafc;
   overflow-y: scroll;
@@ -239,13 +239,14 @@ input {
 .plot {
   background: #ffffff;
   border-radius: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #d7e3f4;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   position: relative;
   flex: 0 0 auto;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
 .plot__header {
@@ -289,6 +290,41 @@ input {
   overflow: hidden;
 }
 
+
+
+.plot__legend-box {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  min-width: 128px;
+  max-width: 220px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #cbd5f5;
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: #334155;
+}
+
+.plot__legend-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.plot__legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.plot__legend-axis {
+  color: #64748b;
+  font-weight: 600;
+}
 
 .plot__resize-zone {
   position: absolute;
@@ -367,7 +403,7 @@ input {
   display: flex;
   flex-direction: column;
   padding: 20px 24px;
-  gap: 16px;
+  gap: 24px;
   min-height: 0;
   background: #f8fafc;
 }
@@ -440,7 +476,7 @@ input {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
+  gap: 24px;
 }
 
 .modal__header h3 {

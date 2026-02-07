@@ -1121,17 +1121,22 @@ export default function App() {
               const assignmentOptions = plot.assignments.map(
                 (item) => `${item.channelId}:${item.axis}`
               );
+              const legendEntries = plot.assignments.map((assignment) => {
+                const idx = channelIndex(assignment.channelId);
+                const channel = channels[idx];
+                return {
+                  key: `${assignment.channelId}-${assignment.axis}`,
+                  axis: assignment.axis.toUpperCase(),
+                  name: channel?.name || assignment.channelId,
+                  color: channel?.color || "#64748b"
+                };
+              });
+
               return (
                 <section className="plot" key={plot.id} style={{ height: `${plot.height || 320}px` }}>
                   <header className="plot__header">
                     <h3>{plot.title}</h3>
-                    <div className="plot__legend">
-                      {plot.assignments.length === 0
-                        ? "Sin canales"
-                        : plot.assignments
-                            .map((item) => `${item.channelId.toUpperCase()}→${item.axis.toUpperCase()}`)
-                            .join(" | ")}
-                    </div>
+                    <div className="plot__legend">{legendEntries.length} señal(es)</div>
                   </header>
 
                   <div className="plot__hint">Click derecho dentro del área para gestionar canales</div>
@@ -1140,6 +1145,20 @@ export default function App() {
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
                   >
                     {renderPlot(plot)}
+                    <div className="plot__legend-box">
+                      <strong>Señales</strong>
+                      {legendEntries.length === 0 ? (
+                        <span>Sin señales</span>
+                      ) : (
+                        legendEntries.map((entry) => (
+                          <div key={entry.key} className="plot__legend-row">
+                            <span className="plot__legend-dot" style={{ backgroundColor: entry.color }} />
+                            <span>{entry.name}</span>
+                            <span className="plot__legend-axis">{entry.axis}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
 
                   <div
