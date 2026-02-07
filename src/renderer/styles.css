@@ -590,3 +590,22 @@ input {
   border: 1px solid #cbd5f5;
   font-size: 12px;
 }
+
+
+.plot-menu__stat-group {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 6px;
+}
+
+.plot-menu__stat-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plot-menu__muted {
+  color: #64748b;
+  font-size: 11px;
+}

@@ -29,9 +29,9 @@ const createPlot = (index) => ({
   y1ManualMax: 1,
   y2ManualMin: 0,
   y2ManualMax: 1,
-  statAvg: false,
-  statMin: false,
-  statMax: false
+  statAvgTargets: [],
+  statMinTargets: [],
+  statMaxTargets: []
 });
 
 const defaultPlots = [createPlot(1), createPlot(2)];
@@ -360,6 +360,24 @@ export default function App() {
   const updatePlotSettings = (plotId, patch) => {
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, ...patch } : plot))
+    );
+  };
+
+
+  const toggleStatTarget = (plotId, statKey, target) => {
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+
+        const current = Array.isArray(plot[statKey]) ? plot[statKey] : [];
+        const exists = current.includes(target);
+        return {
+          ...plot,
+          [statKey]: exists ? current.filter((item) => item !== target) : [...current, target]
+        };
+      })
     );
   };
 
@@ -862,7 +880,12 @@ export default function App() {
     };
 
     const statWindowSamples = getStatWindow();
-    const statSamples = samples.slice(-statWindowSamples);
+    const statTargetGroups = {
+      avg: Array.isArray(plot.statAvgTargets) ? plot.statAvgTargets : [],
+      min: Array.isArray(plot.statMinTargets) ? plot.statMinTargets : [],
+      max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
+    };
+
     const lines = yAssignments
       .map((assignment) => {
         const idx = channelIndex(assignment.channelId);
@@ -902,54 +925,72 @@ export default function App() {
       })
       .filter(Boolean);
 
+    const computeRollingStatSeries = (values, mode) => values.map((_, index) => {
+      const windowStart = Math.max(0, index - statWindowSamples + 1);
+      const scopedValues = values.slice(windowStart, index + 1).filter((value) => value !== undefined);
+      if (scopedValues.length === 0) {
+        return undefined;
+      }
+
+      if (mode === "avg") {
+        return scopedValues.reduce((acc, value) => acc + value, 0) / scopedValues.length;
+      }
+      if (mode === "min") {
+        return Math.min(...scopedValues);
+      }
+      return Math.max(...scopedValues);
+    });
+
     const statCurves = yAssignments
       .map((assignment) => {
-        if (!plot.statAvg && !plot.statMin && !plot.statMax) {
-          return [];
-        }
-
+        const assignmentKey = `${assignment.channelId}:${assignment.axis}`;
         const idx = channelIndex(assignment.channelId);
-        const values = statSamples
-          .map((sample) => sample.values[idx])
-          .filter((value) => value !== undefined);
-
-        if (values.length === 0) {
-          return [];
-        }
-
-        const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         const channel = channels[idx];
-        const baseColor = channel?.color || "#2563eb";
-        const xStart = padding.left;
-        const xEnd = width - padding.right;
+        const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         const curves = [];
 
-        const pushCurve = (suffix, yValue, opacity) => {
-          const y = yTickToPx(yValue, stats);
+        const buildStatPath = (mode, opacity, dasharray = "") => {
+          const targets = statTargetGroups[mode] || [];
+          if (!targets.includes(assignmentKey)) {
+            return;
+          }
+
+          const sourceValues = samples.map((sample) => sample.values[idx]);
+          const statValues = computeRollingStatSeries(sourceValues, mode);
+          const points = statValues
+            .map((value, sampleIndex) => {
+              if (value === undefined) {
+                return null;
+              }
+              const normalizedX = (xValues[sampleIndex] - xTicksData.min) / (xTicksData.max - xTicksData.min || 1);
+              const normalizedY = (value - stats.min) / (stats.max - stats.min || 1);
+              return {
+                x: padding.left + normalizedX * (width - padding.left - padding.right),
+                y: height - padding.bottom - normalizedY * (height - padding.top - padding.bottom)
+              };
+            })
+            .filter(Boolean);
+
+          if (points.length < 2) {
+            return;
+          }
+
           curves.push(
-            <line
-              key={`${assignment.channelId}-${assignment.axis}-${suffix}`}
-              x1={xStart}
-              y1={y}
-              x2={xEnd}
-              y2={y}
-              stroke={baseColor}
+            <path
+              key={`${assignment.channelId}-${assignment.axis}-${mode}`}
+              d={buildPath(points)}
+              fill="none"
+              stroke={channel?.color || "#2563eb"}
+              strokeWidth="0.5"
               strokeOpacity={opacity}
-              strokeWidth="1"
+              strokeDasharray={dasharray}
             />
           );
         };
 
-        if (plot.statAvg) {
-          const avg = values.reduce((acc, value) => acc + value, 0) / values.length;
-          pushCurve("avg", avg, 0.9);
-        }
-        if (plot.statMin) {
-          pushCurve("min", Math.min(...values), 0.55);
-        }
-        if (plot.statMax) {
-          pushCurve("max", Math.max(...values), 0.55);
-        }
+        buildStatPath("avg", 0.85, "5 3");
+        buildStatPath("min", 0.65, "2 3");
+        buildStatPath("max", 0.65, "2 3");
 
         return curves;
       })
@@ -1260,6 +1301,7 @@ export default function App() {
               const assignmentOptions = plot.assignments.map(
                 (item) => `${item.channelId}:${item.axis}`
               );
+              const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
               const legendEntries = plot.assignments.map((assignment) => {
                 const idx = channelIndex(assignment.channelId);
                 const channel = channels[idx];
@@ -1387,9 +1429,35 @@ export default function App() {
                             onChange={(event) => updatePlotSettings(plot.id, { statsWindowValue: Math.max(2, Number(event.target.value) || 2) })}
                           />
                         </div>
-                        <label><input type="checkbox" checked={plot.statAvg} onChange={(event) => updatePlotSettings(plot.id, { statAvg: event.target.checked })} /> Promedio</label>
-                        <label><input type="checkbox" checked={plot.statMin} onChange={(event) => updatePlotSettings(plot.id, { statMin: event.target.checked })} /> Mínimo</label>
-                        <label><input type="checkbox" checked={plot.statMax} onChange={(event) => updatePlotSettings(plot.id, { statMax: event.target.checked })} /> Máximo</label>
+                        {([
+                          { key: "avg", label: "Promedio", field: "statAvgTargets" },
+                          { key: "min", label: "Mínimo", field: "statMinTargets" },
+                          { key: "max", label: "Máximo", field: "statMaxTargets" }
+                        ]).map((stat) => (
+                          <div key={stat.key} className="plot-menu__stat-group">
+                            <strong>{stat.label}</strong>
+                            {yAssignments.length === 0 ? (
+                              <span className="plot-menu__muted">Sin señales Y</span>
+                            ) : (
+                              yAssignments.map((assignment) => {
+                                const targetKey = `${assignment.channelId}:${assignment.axis}`;
+                                const idx = channelIndex(assignment.channelId);
+                                const channel = channels[idx];
+                                const selected = (Array.isArray(plot[stat.field]) ? plot[stat.field] : []).includes(targetKey);
+                                return (
+                                  <label key={`${stat.key}-${targetKey}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() => toggleStatTarget(plot.id, stat.field, targetKey)}
+                                    />
+                                    {channel?.name || assignment.channelId} ({assignment.axis.toUpperCase()})
+                                  </label>
+                                );
+                              })
+                            )}
+                          </div>
+                        ))}
                       </div>
 
                       <div className="plot-menu__section">
