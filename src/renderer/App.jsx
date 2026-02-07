@@ -24,7 +24,7 @@ const createPlot = (index) => ({
   y2Mode: "auto",
   xManualMin: 0,
   xManualMax: 100,
-  xWindowSize: 400,
+  xWindowSize: 10,
   y1ManualMin: 0,
   y1ManualMax: 1,
   y2ManualMin: 0,
@@ -224,6 +224,45 @@ const formatTick = (value, step) => {
   return rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 };
 
+const downsamplePointsByPixel = (points) => {
+  if (points.length <= 2) {
+    return points;
+  }
+
+  const buckets = new Map();
+  points.forEach((point) => {
+    const key = Math.floor(point.x);
+    const current = buckets.get(key);
+    if (!current) {
+      buckets.set(key, { first: point, last: point, min: point, max: point });
+      return;
+    }
+
+    current.last = point;
+    if (point.y < current.min.y) {
+      current.min = point;
+    }
+    if (point.y > current.max.y) {
+      current.max = point;
+    }
+  });
+
+  const reduced = [];
+  [...buckets.keys()].sort((a, b) => a - b).forEach((key) => {
+    const bucket = buckets.get(key);
+    [bucket.first, bucket.min, bucket.max, bucket.last]
+      .sort((a, b) => a.x - b.x)
+      .forEach((point) => {
+        const prev = reduced[reduced.length - 1];
+        if (!prev || prev.x !== point.x || prev.y !== point.y) {
+          reduced.push(point);
+        }
+      });
+  });
+
+  return reduced.length >= 2 ? reduced : points;
+};
+
 const buildSeries = (
   samples,
   xValues,
@@ -232,14 +271,14 @@ const buildSeries = (
   maxY,
   height,
   width,
-  padding
+  padding,
+  minX,
+  maxX
 ) => {
   if (samples.length <= 1) {
     return "";
   }
 
-  const minX = Math.min(...xValues);
-  const maxX = Math.max(...xValues);
   const spreadX = maxX - minX || 1;
 
   const points = samples.map((sample, sampleIndex) => {
@@ -255,7 +294,8 @@ const buildSeries = (
     };
   });
 
-  return buildPath(points);
+  const reducedPoints = downsamplePointsByPixel(points);
+  return buildPath(reducedPoints);
 };
 
 export default function App() {
@@ -376,6 +416,78 @@ export default function App() {
         return {
           ...plot,
           [statKey]: exists ? current.filter((item) => item !== target) : [...current, target]
+        };
+      })
+    );
+  };
+
+
+  const getWheelUnits = (event) => {
+    const fast = Math.abs(event.deltaY) > 80;
+    const base = fast ? 5 : 1;
+    const scale = event.shiftKey ? 10 : 1;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    return direction * base * scale;
+  };
+
+  const handlePlotAxisWheel = (event, plotId) => {
+    const target = event.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const relativeX = (event.clientX - rect.left) / Math.max(1, rect.width);
+    const relativeY = (event.clientY - rect.top) / Math.max(1, rect.height);
+
+    const isLeftAxisLabels = relativeX <= 0.08;
+    const isRightAxisLabels = relativeX >= 0.92;
+    const isBottomAxisLabels = relativeY >= 0.9 && relativeX > 0.08 && relativeX < 0.92;
+
+    if (!isLeftAxisLabels && !isRightAxisLabels && !isBottomAxisLabels) {
+      return;
+    }
+
+    event.preventDefault();
+    const units = getWheelUnits(event);
+
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+
+        if (isBottomAxisLabels) {
+          if (plot.xMode === "window") {
+            return {
+              ...plot,
+              xWindowSize: clamp((Number(plot.xWindowSize) || 10) + units, 1, 36000)
+            };
+          }
+          if (plot.xMode === "manual") {
+            const span = Math.max(1e-6, Number(plot.xManualMax) - Number(plot.xManualMin));
+            const step = Math.max(span / 100, 0.1);
+            const shift = units * step;
+            return {
+              ...plot,
+              xManualMin: Number((Number(plot.xManualMin) + shift).toFixed(6)),
+              xManualMax: Number((Number(plot.xManualMax) + shift).toFixed(6))
+            };
+          }
+          return plot;
+        }
+
+        const axis = isRightAxisLabels ? "y2" : "y1";
+        if (plot[`${axis}Mode`] !== "manual") {
+          return plot;
+        }
+
+        const minKey = `${axis}ManualMin`;
+        const maxKey = `${axis}ManualMax`;
+        const span = Math.max(1e-6, Number(plot[maxKey]) - Number(plot[minKey]));
+        const step = Math.max(span / 120, 0.01);
+        const shift = units * step;
+
+        return {
+          ...plot,
+          [minKey]: Number((Number(plot[minKey]) + shift).toFixed(6)),
+          [maxKey]: Number((Number(plot[maxKey]) + shift).toFixed(6))
         };
       })
     );
@@ -772,7 +884,7 @@ export default function App() {
 
   const renderPlot = (plot) => {
     const allSamples = historyRef.current;
-    const sampleWindowSize = Math.max(2, Number(plot.xWindowSize || plot.statsWindowValue || 400));
+    const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
     const samples = plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = 1200;
@@ -902,7 +1014,9 @@ export default function App() {
           stats.max,
           height,
           width,
-          padding
+          padding,
+          xTicksData.min,
+          xTicksData.max
         );
         if (!path) {
           return null;
@@ -925,21 +1039,53 @@ export default function App() {
       })
       .filter(Boolean);
 
-    const computeRollingStatSeries = (values, mode) => values.map((_, index) => {
-      const windowStart = Math.max(0, index - statWindowSamples + 1);
-      const scopedValues = values.slice(windowStart, index + 1).filter((value) => value !== undefined);
-      if (scopedValues.length === 0) {
-        return undefined;
+    const computeRollingStatSeries = (values, mode) => {
+      if (mode === "avg") {
+        let sum = 0;
+        let count = 0;
+        return values.map((value, index) => {
+          if (value !== undefined) {
+            sum += value;
+            count += 1;
+          }
+          const outIndex = index - statWindowSamples;
+          if (outIndex >= 0) {
+            const outValue = values[outIndex];
+            if (outValue !== undefined) {
+              sum -= outValue;
+              count -= 1;
+            }
+          }
+          return count > 0 ? sum / count : undefined;
+        });
       }
 
-      if (mode === "avg") {
-        return scopedValues.reduce((acc, value) => acc + value, 0) / scopedValues.length;
-      }
-      if (mode === "min") {
-        return Math.min(...scopedValues);
-      }
-      return Math.max(...scopedValues);
-    });
+      const deque = [];
+      return values.map((value, index) => {
+        if (value !== undefined) {
+          while (deque.length) {
+            const tailValue = values[deque[deque.length - 1]];
+            if (tailValue === undefined) {
+              deque.pop();
+              continue;
+            }
+            if ((mode === "min" && tailValue >= value) || (mode === "max" && tailValue <= value)) {
+              deque.pop();
+            } else {
+              break;
+            }
+          }
+          deque.push(index);
+        }
+
+        const windowStart = index - statWindowSamples + 1;
+        while (deque.length && deque[0] < windowStart) {
+          deque.shift();
+        }
+
+        return deque.length ? values[deque[0]] : undefined;
+      });
+    };
 
     const statCurves = yAssignments
       .map((assignment) => {
@@ -957,7 +1103,7 @@ export default function App() {
 
           const sourceValues = samples.map((sample) => sample.values[idx]);
           const statValues = computeRollingStatSeries(sourceValues, mode);
-          const points = statValues
+          const points = downsamplePointsByPixel(statValues
             .map((value, sampleIndex) => {
               if (value === undefined) {
                 return null;
@@ -969,7 +1115,7 @@ export default function App() {
                 y: height - padding.bottom - normalizedY * (height - padding.top - padding.bottom)
               };
             })
-            .filter(Boolean);
+            .filter(Boolean));
 
           if (points.length < 2) {
             return;
@@ -988,9 +1134,9 @@ export default function App() {
           );
         };
 
-        buildStatPath("avg", 0.85, "5 3");
-        buildStatPath("min", 0.65, "2 3");
-        buildStatPath("max", 0.65, "2 3");
+        buildStatPath("avg", 0.85);
+        buildStatPath("min", 0.65);
+        buildStatPath("max", 0.65);
 
         return curves;
       })
@@ -1322,6 +1468,7 @@ export default function App() {
                   <div
                     className="plot__canvas"
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
+                    onWheel={(event) => handlePlotAxisWheel(event, plot.id)}
                   >
                     {renderPlot(plot)}
                     <div className="plot__legend-box">
@@ -1470,19 +1617,10 @@ export default function App() {
                             <option value="manual">Manual</option>
                           </select>
                         </label>
-                        {plot.xMode === "manual" ? (
-                          <div className="plot-menu__inline-fields">
-                            <input type="number" value={plot.xManualMin} onChange={(event) => updatePlotSettings(plot.id, { xManualMin: Number(event.target.value) || 0 })} />
-                            <input type="number" value={plot.xManualMax} onChange={(event) => updatePlotSettings(plot.id, { xManualMax: Number(event.target.value) || 1 })} />
-                          </div>
-                        ) : null}
-                        {plot.xMode === "window" ? (
-                          <input
-                            type="number"
-                            min="2"
-                            value={plot.xWindowSize}
-                            onChange={(event) => updatePlotSettings(plot.id, { xWindowSize: Math.max(2, Number(event.target.value) || 2) })}
-                          />
+                        {(plot.xMode === "manual" || plot.xMode === "window") ? (
+                          <p className="plot-menu__muted">
+                            Ajusta con la rueda del ratón sobre etiquetas del eje X (Shift = ajuste grueso).
+                          </p>
                         ) : null}
                         <label>
                           Y1 mode
@@ -1492,10 +1630,9 @@ export default function App() {
                           </select>
                         </label>
                         {plot.y1Mode === "manual" ? (
-                          <div className="plot-menu__inline-fields">
-                            <input type="number" value={plot.y1ManualMin} onChange={(event) => updatePlotSettings(plot.id, { y1ManualMin: Number(event.target.value) || 0 })} />
-                            <input type="number" value={plot.y1ManualMax} onChange={(event) => updatePlotSettings(plot.id, { y1ManualMax: Number(event.target.value) || 1 })} />
-                          </div>
+                          <p className="plot-menu__muted">
+                            Ajusta con la rueda sobre etiquetas Y1 (lado izquierdo).
+                          </p>
                         ) : null}
                         <label>
                           Y2 mode
@@ -1505,10 +1642,9 @@ export default function App() {
                           </select>
                         </label>
                         {plot.y2Mode === "manual" ? (
-                          <div className="plot-menu__inline-fields">
-                            <input type="number" value={plot.y2ManualMin} onChange={(event) => updatePlotSettings(plot.id, { y2ManualMin: Number(event.target.value) || 0 })} />
-                            <input type="number" value={plot.y2ManualMax} onChange={(event) => updatePlotSettings(plot.id, { y2ManualMax: Number(event.target.value) || 1 })} />
-                          </div>
+                          <p className="plot-menu__muted">
+                            Ajusta con la rueda sobre etiquetas Y2 (lado derecho).
+                          </p>
                         ) : null}
                       </div>
                     </div>
