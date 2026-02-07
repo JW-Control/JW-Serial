@@ -166,19 +166,22 @@ const formatTick = (value, step) => {
   if (!Number.isFinite(value)) {
     return "0";
   }
-  if (step >= 100) {
-    return Math.round(value).toString();
-  }
+
+  const rounded = Number(value.toFixed(6));
   if (step >= 1) {
-    return Math.round(value).toString();
+    const nearestInt = Math.round(rounded);
+    if (Math.abs(rounded - nearestInt) < 1e-3) {
+      return nearestInt.toString();
+    }
+    return rounded.toFixed(1).replace(/0+$/, "").replace(/\.$/, "");
   }
   if (step >= 0.5) {
-    return value.toFixed(1).replace(/0+$/, "").replace(/\.$/, "");
+    return rounded.toFixed(1).replace(/0+$/, "").replace(/\.$/, "");
   }
   if (step >= 0.1) {
-    return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+    return rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
   }
-  return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  return rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 };
 
 const buildSeries = (
@@ -305,10 +308,14 @@ export default function App() {
 
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
+    const menuWidth = 300;
+    const menuHeight = 280;
+    const x = clamp(event.clientX, 8, window.innerWidth - menuWidth - 8);
+    const y = clamp(event.clientY, 8, window.innerHeight - menuHeight - 8);
     setContextMenu({
       plotId,
-      x: event.clientX,
-      y: event.clientY
+      x,
+      y
     });
   };
 
@@ -321,7 +328,7 @@ export default function App() {
   };
 
   const updatePlotHeight = (plotId, nextHeight) => {
-    const height = clamp(Number(nextHeight) || 320, 240, 720);
+    const height = clamp(Number(nextHeight) || 320, 300, 720);
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, height } : plot))
     );
@@ -677,11 +684,11 @@ export default function App() {
 
   const renderPlot = (plot) => {
     const samples = historyRef.current;
-    const layoutHeight = clamp(plot.height || 320, 240, 720);
+    const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = 1200;
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
-    const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 90), 4, 22);
+    const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -751,9 +758,12 @@ export default function App() {
       return padding.left + ratio * (width - padding.left - padding.right);
     };
 
-    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 20);
-    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 20);
-    const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 78);
+    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 20)
+      .filter((tick, index, arr) => index === 0 || formatTick(tick, y1TicksData.step) !== formatTick(arr[index - 1], y1TicksData.step));
+    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 20)
+      .filter((tick, index, arr) => index === 0 || formatTick(tick, y2TicksData.step) !== formatTick(arr[index - 1], y2TicksData.step));
+    const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 64)
+      .filter((tick, index, arr) => index === 0 || formatTick(tick, xTicksData.step) !== formatTick(arr[index - 1], xTicksData.step));
 
     const lines = yAssignments
       .map((assignment) => {

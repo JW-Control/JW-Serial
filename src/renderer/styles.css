@@ -229,8 +229,11 @@ input {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding-bottom: 72px;
   background: #f8fafc;
-  overflow: auto;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .plot {
@@ -290,8 +293,8 @@ input {
   position: absolute;
   left: 16px;
   right: 16px;
-  bottom: -7px;
-  height: 14px;
+  bottom: 0;
+  height: 16px;
   cursor: ns-resize;
   border-radius: 8px;
   background: transparent;
@@ -317,7 +320,7 @@ input {
 .plot-menu {
   position: fixed;
   z-index: 50;
-  width: 320px;
+  width: 300px;
   background: #ffffff;
   border: 1px solid #cbd5f5;
   border-radius: 10px;
@@ -325,6 +328,8 @@ input {
   padding: 10px;
   display: grid;
   gap: 12px;
+  max-height: min(74vh, 340px);
+  overflow: auto;
 }
 
 .plot-menu__channels {
