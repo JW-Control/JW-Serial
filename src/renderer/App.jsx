@@ -130,6 +130,21 @@ const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
   return makeTicks(minValue, maxValue, targetTicks);
 };
 
+const filterTicksByPixelGap = (ticks, toPx, minGap = 22) => {
+  const ordered = [...ticks].sort((a, b) => toPx(a) - toPx(b));
+  const kept = [];
+
+  ordered.forEach((tick) => {
+    const px = toPx(tick);
+    const prev = kept[kept.length - 1];
+    if (!prev || Math.abs(px - toPx(prev)) >= minGap) {
+      kept.push(tick);
+    }
+  });
+
+  return kept;
+};
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const normalizeAxisRange = (minValue, maxValue) => {
@@ -666,7 +681,7 @@ export default function App() {
     const width = 1200;
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 14, right: 60, bottom: 34, left: 60 };
-    const xTargetTicks = clamp(Math.floor(width / 180), 3, 10);
+    const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 90), 4, 22);
 
     if (samples.length < 2 || plot.assignments.length === 0) {
       return <span>Esperando datos y canales asignados...</span>;
@@ -735,6 +750,10 @@ export default function App() {
       const ratio = (value - xTicksData.min) / (xTicksData.max - xTicksData.min || 1);
       return padding.left + ratio * (width - padding.left - padding.right);
     };
+
+    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 20);
+    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 20);
+    const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 78);
 
     const lines = yAssignments
       .map((assignment) => {
@@ -846,7 +865,7 @@ export default function App() {
           );
         })}
 
-        {xTicksData.ticks.map((tick) => {
+        {xVisibleTicks.map((tick) => {
           const x = xTickToPx(tick);
           return (
             <g key={`x-${tick}`}>
@@ -871,7 +890,7 @@ export default function App() {
           );
         })}
 
-        {y1TicksData.ticks.map((tick) => {
+        {y1VisibleTicks.map((tick) => {
           const y = yTickToPx(tick, y1TicksData);
           return (
             <g key={`y1-${tick}`}>
@@ -896,7 +915,7 @@ export default function App() {
           );
         })}
 
-        {y2TicksData.ticks.map((tick) => {
+        {y2VisibleTicks.map((tick) => {
           const y = yTickToPx(tick, y2TicksData);
           return (
             <text
