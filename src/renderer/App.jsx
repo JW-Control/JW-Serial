@@ -319,7 +319,8 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
   const [variableMenu, setVariableMenu] = useState(null);
-  const [axisWheelArmed, setAxisWheelArmed] = useState({});
+  const [hoverAxisByPlot, setHoverAxisByPlot] = useState({});
+  const [axisDrag, setAxisDrag] = useState(null);
   const menuRef = useRef(null);
   const variableMenuRef = useRef(null);
   const historyRef = useRef([]);
@@ -348,9 +349,7 @@ export default function App() {
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
 
-  const hasArmedAxis = useMemo(() => Object.values(axisWheelArmed).some(Boolean), [axisWheelArmed]);
-
-  const statusTone = isPaused
+    const statusTone = isPaused
     ? "paused"
     : connectionStatus === "connected"
       ? "connected"
@@ -431,13 +430,6 @@ export default function App() {
     return direction * base;
   };
 
-  const armAxisWheel = (plotId, axis) => {
-    setAxisWheelArmed((prev) => ({
-      ...prev,
-      [plotId]: prev[plotId] === axis ? null : axis
-    }));
-  };
-
   const getPointerAxisZone = (event) => {
     const target = event.currentTarget;
     const rect = target.getBoundingClientRect();
@@ -456,71 +448,233 @@ export default function App() {
     return null;
   };
 
-  const handlePlotAxisWheel = (event, plotId) => {
-    const armedAxis = axisWheelArmed[plotId] || null;
-    if (!armedAxis) {
-      return;
+  const isAxisEditable = (plot, axis) => {
+    if (axis === "x") {
+      return plot.xMode === "manual" || plot.xMode === "window";
+    }
+    return plot[`${axis}Mode`] === "manual";
+  };
+
+  const getSamplesForPlot = (plot) => {
+    const allSamples = historyRef.current;
+    const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
+    return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+  };
+
+  const computeAxisAutoRange = (plot, axis) => {
+    const samples = getSamplesForPlot(plot);
+    if (samples.length < 2) {
+      return null;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
+    if (axis === "x") {
+      const xAssignment = plot.assignments.find((item) => item.axis === "x");
+      const xValues = samples.map((sample, index) => {
+        if (xAssignment) {
+          return sample.values[channelIndex(xAssignment.channelId)] ?? index;
+        }
+        if (basicConfig.includeTimestamp && sample.xValue !== null) {
+          return sample.xValue;
+        }
+        return index;
+      });
 
-    const axisZone = getPointerAxisZone(event);
-    if (!axisZone || armedAxis !== axisZone) {
-      return;
+      return { min: Math.min(...xValues), max: Math.max(...xValues) };
     }
 
-    const units = getWheelUnits(event);
+    const axisAssignments = plot.assignments.filter((item) => item.axis === axis);
+    if (!axisAssignments.length) {
+      return null;
+    }
 
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    axisAssignments.forEach((assignment) => {
+      const idx = channelIndex(assignment.channelId);
+      samples.forEach((sample) => {
+        const value = sample.values[idx];
+        if (value === undefined) {
+          return;
+        }
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      });
+    });
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return null;
+    }
+    return normalizeYAxisRange(min, max);
+  };
+
+  const handleModeChange = (plotId, axis, mode) => {
     setPlots((prev) =>
       prev.map((plot) => {
         if (plot.id !== plotId) {
           return plot;
         }
 
-        if (axisZone === "x") {
-          if (plot.xMode === "window") {
-            return {
-              ...plot,
-              xWindowSize: clamp((Number(plot.xWindowSize) || 10) + units, 1, 36000)
-            };
-          }
-          if (plot.xMode === "manual") {
-            const span = Math.max(1e-6, Number(plot.xManualMax) - Number(plot.xManualMin));
-            const step = Math.max(span / 100, 0.1);
-            const shift = units * step;
-            return {
-              ...plot,
-              xManualMin: Number((Number(plot.xManualMin) + shift).toFixed(6)),
-              xManualMax: Number((Number(plot.xManualMax) + shift).toFixed(6))
-            };
-          }
-          return plot;
+        const key = `${axis}Mode`;
+        const next = { ...plot, [key]: mode };
+        if (mode !== "manual") {
+          return next;
         }
 
-        if (plot[`${axisZone}Mode`] !== "manual") {
-          return plot;
+        const auto = computeAxisAutoRange(plot, axis);
+        if (!auto) {
+          return next;
+        }
+
+        if (axis === "x") {
+          return {
+            ...next,
+            xManualMin: Number(auto.min.toFixed(6)),
+            xManualMax: Number(auto.max.toFixed(6))
+          };
+        }
+
+        return {
+          ...next,
+          [`${axis}ManualMin`]: Number(auto.min.toFixed(6)),
+          [`${axis}ManualMax`]: Number(auto.max.toFixed(6))
+        };
+      })
+    );
+  };
+
+  const handlePlotCanvasPointerMove = (event, plotId) => {
+    const axis = getPointerAxisZone(event);
+    const plot = plots.find((item) => item.id === plotId);
+    const activeAxis = plot && axis && isAxisEditable(plot, axis) ? axis : null;
+
+    setHoverAxisByPlot((prev) => {
+      if ((prev[plotId] || null) === activeAxis) {
+        return prev;
+      }
+      return { ...prev, [plotId]: activeAxis };
+    });
+
+    if (!axisDrag || axisDrag.plotId !== plotId || !plot) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const pixelHeight = Math.max(1, rect.height * 0.76);
+    const deltaY = event.clientY - axisDrag.lastClientY;
+    if (Math.abs(deltaY) < 0.5) {
+      return;
+    }
+
+    setAxisDrag((prev) => (prev ? { ...prev, lastClientY: event.clientY } : prev));
+
+    setPlots((prev) =>
+      prev.map((candidate) => {
+        if (candidate.id !== plotId || !["y1", "y2"].includes(axisDrag.axis) || candidate[`${axisDrag.axis}Mode`] !== "manual") {
+          return candidate;
+        }
+
+        const minKey = `${axisDrag.axis}ManualMin`;
+        const maxKey = `${axisDrag.axis}ManualMax`;
+        const span = Math.max(1e-6, Number(candidate[maxKey]) - Number(candidate[minKey]));
+        const valueShift = (-deltaY / pixelHeight) * span;
+        return {
+          ...candidate,
+          [minKey]: Number((Number(candidate[minKey]) + valueShift).toFixed(6)),
+          [maxKey]: Number((Number(candidate[maxKey]) + valueShift).toFixed(6))
+        };
+      })
+    );
+  };
+
+  const handlePlotCanvasPointerDown = (event, plotId) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const axis = getPointerAxisZone(event);
+    if (!axis || axis === "x") {
+      return;
+    }
+
+    const plot = plots.find((item) => item.id === plotId);
+    if (!plot || !isAxisEditable(plot, axis)) {
+      return;
+    }
+
+    event.preventDefault();
+    setAxisDrag({ plotId, axis, lastClientY: event.clientY });
+  };
+
+  const handlePlotCanvasPointerLeave = (plotId) => {
+    setHoverAxisByPlot((prev) => {
+      if (!prev[plotId]) {
+        return prev;
+      }
+      return { ...prev, [plotId]: null };
+    });
+  };
+
+  const handlePlotAxisWheel = (event, plotId) => {
+    const axisZone = getPointerAxisZone(event);
+    const plot = plots.find((item) => item.id === plotId);
+    if (!plot || !axisZone || !isAxisEditable(plot, axisZone)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const units = getWheelUnits(event);
+
+    setPlots((prev) =>
+      prev.map((candidate) => {
+        if (candidate.id !== plotId) {
+          return candidate;
+        }
+
+        if (axisZone === "x") {
+          if (candidate.xMode === "window") {
+            return {
+              ...candidate,
+              xWindowSize: clamp((Number(candidate.xWindowSize) || 10) + units, 1, 36000)
+            };
+          }
+          if (candidate.xMode === "manual") {
+            const min = Number(candidate.xManualMin);
+            const max = Number(candidate.xManualMax);
+            const center = (min + max) / 2;
+            const span = Math.max(1e-6, max - min);
+            const nextSpan = Math.max(1e-6, span - units * Math.max(span * 0.08, 0.5));
+            return {
+              ...candidate,
+              xManualMin: Number((center - nextSpan / 2).toFixed(6)),
+              xManualMax: Number((center + nextSpan / 2).toFixed(6))
+            };
+          }
+          return candidate;
+        }
+
+        if (candidate[`${axisZone}Mode`] !== "manual") {
+          return candidate;
         }
 
         const minKey = `${axisZone}ManualMin`;
         const maxKey = `${axisZone}ManualMax`;
-        const span = Math.max(1e-6, Number(plot[maxKey]) - Number(plot[minKey]));
-        const step = Math.max(span / 120, 0.01);
-        const shift = units * step;
+        const min = Number(candidate[minKey]);
+        const max = Number(candidate[maxKey]);
+        const center = (min + max) / 2;
+        const span = Math.max(1e-6, max - min);
+        const nextSpan = Math.max(1e-6, span - units * Math.max(span * 0.08, 0.02));
 
         return {
-          ...plot,
-          [minKey]: Number((Number(plot[minKey]) + shift).toFixed(6)),
-          [maxKey]: Number((Number(plot[maxKey]) + shift).toFixed(6))
+          ...candidate,
+          [minKey]: Number((center - nextSpan / 2).toFixed(6)),
+          [maxKey]: Number((center + nextSpan / 2).toFixed(6))
         };
       })
     );
   };
 
   const handlePlotterWheelCapture = (event) => {
-    if (!hasArmedAxis) {
-      return;
-    }
     event.preventDefault();
     event.stopPropagation();
   };
@@ -898,27 +1052,14 @@ export default function App() {
 
 
   useEffect(() => {
-    setAxisWheelArmed((prev) => {
-      let changed = false;
-      const next = { ...prev };
+    if (!axisDrag) {
+      return undefined;
+    }
 
-      plots.forEach((plot) => {
-        const armed = next[plot.id];
-        if (!armed) {
-          return;
-        }
-        const editable = armed === "x"
-          ? plot.xMode === "manual" || plot.xMode === "window"
-          : plot[`${armed}Mode`] === "manual";
-        if (!editable) {
-          next[plot.id] = null;
-          changed = true;
-        }
-      });
-
-      return changed ? next : prev;
-    });
-  }, [plots]);
+    const stopDrag = () => setAxisDrag(null);
+    window.addEventListener("pointerup", stopDrag);
+    return () => window.removeEventListener("pointerup", stopDrag);
+  }, [axisDrag]);
 
   useEffect(() => {
     if (!plotResize) {
@@ -1200,13 +1341,7 @@ export default function App() {
       })
       .flat();
 
-    const isAxisActive = (axis) => axisWheelArmed[plot.id] === axis;
-    const isAxisEditable = (axis) => {
-      if (axis === "x") {
-        return plot.xMode === "manual" || plot.xMode === "window";
-      }
-      return plot[`${axis}Mode`] === "manual";
-    };
+    const isAxisActive = (axis) => hoverAxisByPlot[plot.id] === axis && isAxisEditable(plot, axis);
 
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
@@ -1241,24 +1376,24 @@ export default function App() {
           y={padding.top + 6}
           width={34}
           height={height - padding.top - padding.bottom - 12}
-          className={`axis-control-box ${isAxisEditable("y1") ? "axis-control-box--editable" : ""} ${isAxisActive("y1") ? "axis-control-box--active" : ""}`}
-          onClick={() => isAxisEditable("y1") ? armAxisWheel(plot.id, "y1") : null}
+          className={`axis-control-box ${isAxisEditable(plot, "y1") ? "axis-control-box--editable" : ""} ${isAxisActive("y1") ? "axis-control-box--active" : ""}`}
+          
         />
         <rect
           x={width - padding.right + 10}
           y={padding.top + 6}
           width={34}
           height={height - padding.top - padding.bottom - 12}
-          className={`axis-control-box ${isAxisEditable("y2") ? "axis-control-box--editable" : ""} ${isAxisActive("y2") ? "axis-control-box--active" : ""}`}
-          onClick={() => isAxisEditable("y2") ? armAxisWheel(plot.id, "y2") : null}
+          className={`axis-control-box ${isAxisEditable(plot, "y2") ? "axis-control-box--editable" : ""} ${isAxisActive("y2") ? "axis-control-box--active" : ""}`}
+          
         />
         <rect
           x={padding.left + 4}
           y={height - 18}
           width={width - padding.left - padding.right - 8}
           height={16}
-          className={`axis-control-box ${isAxisEditable("x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
-          onClick={() => isAxisEditable("x") ? armAxisWheel(plot.id, "x") : null}
+          className={`axis-control-box ${isAxisEditable(plot, "x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
+          
         />
 
         {xMinorTicks.map((tick) => {
@@ -1560,6 +1695,9 @@ export default function App() {
                     className="plot__canvas"
                     onContextMenu={(event) => openContextMenu(event, plot.id)}
                     onWheel={(event) => handlePlotAxisWheel(event, plot.id)}
+                    onPointerMove={(event) => handlePlotCanvasPointerMove(event, plot.id)}
+                    onPointerDown={(event) => handlePlotCanvasPointerDown(event, plot.id)}
+                    onPointerLeave={() => handlePlotCanvasPointerLeave(plot.id)}
                   >
                     {renderPlot(plot)}
                     <div className="plot__legend-box">
@@ -1702,7 +1840,7 @@ export default function App() {
                         <strong>Modes</strong>
                         <label>
                           X mode
-                          <select value={plot.xMode} onChange={(event) => updatePlotSettings(plot.id, { xMode: event.target.value })}>
+                          <select value={plot.xMode} onChange={(event) => handleModeChange(plot.id, "x", event.target.value)}>
                             <option value="auto">Automático</option>
                             <option value="window">Ventana deslizante</option>
                             <option value="manual">Manual</option>
@@ -1710,31 +1848,31 @@ export default function App() {
                         </label>
                         {(plot.xMode === "manual" || plot.xMode === "window") ? (
                           <p className="plot-menu__muted">
-                            Haz click en el recuadro del eje X para armar edición; luego rueda encima (Shift = salto de 10).
+                            Pasa el mouse sobre la zona X y usa rueda (Shift = salto de 10).
                           </p>
                         ) : null}
                         <label>
                           Y1 mode
-                          <select value={plot.y1Mode} onChange={(event) => updatePlotSettings(plot.id, { y1Mode: event.target.value })}>
+                          <select value={plot.y1Mode} onChange={(event) => handleModeChange(plot.id, "y1", event.target.value)}>
                             <option value="auto">Automático</option>
                             <option value="manual">Manual</option>
                           </select>
                         </label>
                         {plot.y1Mode === "manual" ? (
                           <p className="plot-menu__muted">
-                            Haz click en recuadro Y1 para armar edición; luego rueda encima.
+                            Pasa el mouse sobre zona Y1 y usa rueda; arrastra con click izquierdo para deslizar.
                           </p>
                         ) : null}
                         <label>
                           Y2 mode
-                          <select value={plot.y2Mode} onChange={(event) => updatePlotSettings(plot.id, { y2Mode: event.target.value })}>
+                          <select value={plot.y2Mode} onChange={(event) => handleModeChange(plot.id, "y2", event.target.value)}>
                             <option value="auto">Automático</option>
                             <option value="manual">Manual</option>
                           </select>
                         </label>
                         {plot.y2Mode === "manual" ? (
                           <p className="plot-menu__muted">
-                            Haz click en recuadro Y2 para armar edición; luego rueda encima.
+                            Pasa el mouse sobre zona Y2 y usa rueda; arrastra con click izquierdo para deslizar.
                           </p>
                         ) : null}
                       </div>
