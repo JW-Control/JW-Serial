@@ -11,8 +11,8 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "build:renderer": "vite build",
-    "dist:win": "npm run build:renderer && electron-builder --win nsis",
-    "dist:portable": "npm run build:renderer && electron-builder --win portable",
+    "dist:win": "npm run build:renderer && npx --yes electron-builder --win nsis",
+    "dist:portable": "npm run build:renderer && npx --yes electron-builder --win portable",
     "dist": "npm run dist:win"
   },
   "dependencies": {

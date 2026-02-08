@@ -27,6 +27,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
+where npx >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] npx no esta disponible en PATH.
+  echo Reinstala Node.js LTS (npx viene incluido).
+  echo.
+  pause
+  exit /b 1
+)
+
 if not exist node_modules (
   echo [INFO] Dependencias no encontradas. Ejecutando npm install...
   call npm install
@@ -47,13 +56,14 @@ echo.
 if not "%BUILD_EXIT%"=="0" (
   echo [ERROR] Build fallo con codigo %BUILD_EXIT%.
   echo Causas comunes:
-  echo   - Falta electron-builder (npm install incompleto)
+  echo   - Falta electron-builder ^(npm install incompleto^)
   echo   - Bloqueo de antivirus/permisos
   echo   - Dependencias nativas pendientes
   echo.
   echo Recomendado:
-  echo   1) npm install
-  echo   2) npm run dist:win
+  echo   1) npm install --include=dev
+  echo   2) npm i -D electron-builder
+  echo   3) npm run dist:win
   echo.
   pause
   exit /b %BUILD_EXIT%

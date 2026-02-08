@@ -120,3 +120,9 @@ Ese `.bat` ahora:
 
 Atajo adicional:
 - `npm run dist:portable` para generar ejecutable portable.
+
+Si aparece error de `electron-builder no se reconoce`, ejecuta:
+```bash
+npm install --include=dev
+npm i -D electron-builder
+```
