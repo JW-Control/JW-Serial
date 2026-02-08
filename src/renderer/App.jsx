@@ -323,6 +323,7 @@ export default function App() {
   const [axisDrag, setAxisDrag] = useState(null);
   const menuRef = useRef(null);
   const variableMenuRef = useRef(null);
+  const plotsRef = useRef(null);
   const historyRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
@@ -1033,6 +1034,20 @@ export default function App() {
   }, [modal]);
 
   useEffect(() => {
+    if (activeTab !== "plotter" || !plotsRef.current) {
+      return undefined;
+    }
+
+    const blockWheelScroll = (event) => {
+      event.preventDefault();
+    };
+
+    const element = plotsRef.current;
+    element.addEventListener("wheel", blockWheelScroll, { passive: false });
+    return () => element.removeEventListener("wheel", blockWheelScroll);
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!contextMenu && !variableMenu) {
       return undefined;
     }
@@ -1666,7 +1681,7 @@ export default function App() {
         </div>
 
         {activeTab === "plotter" ? (
-          <div className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
+          <div ref={plotsRef} className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
             {plots.map((plot) => {
               const draft = getDraft(plot.id);
               const assignmentOptions = plot.assignments.map(
