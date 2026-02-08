@@ -319,6 +319,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
   const [variableMenu, setVariableMenu] = useState(null);
+  const [axisWheelArmed, setAxisWheelArmed] = useState({});
   const menuRef = useRef(null);
   const variableMenuRef = useRef(null);
   const historyRef = useRef([]);
@@ -430,17 +431,39 @@ export default function App() {
     return direction * base * scale;
   };
 
-  const handlePlotAxisWheel = (event, plotId) => {
+  const armAxisWheel = (plotId, axis) => {
+    setAxisWheelArmed((prev) => ({
+      ...prev,
+      [plotId]: prev[plotId] === axis ? null : axis
+    }));
+  };
+
+  const getPointerAxisZone = (event) => {
     const target = event.currentTarget;
     const rect = target.getBoundingClientRect();
     const relativeX = (event.clientX - rect.left) / Math.max(1, rect.width);
     const relativeY = (event.clientY - rect.top) / Math.max(1, rect.height);
 
-    const isLeftAxisLabels = relativeX <= 0.08;
-    const isRightAxisLabels = relativeX >= 0.92;
-    const isBottomAxisLabels = relativeY >= 0.9 && relativeX > 0.08 && relativeX < 0.92;
+    if (relativeX <= 0.08) {
+      return "y1";
+    }
+    if (relativeX >= 0.92) {
+      return "y2";
+    }
+    if (relativeY >= 0.9 && relativeX > 0.08 && relativeX < 0.92) {
+      return "x";
+    }
+    return null;
+  };
 
-    if (!isLeftAxisLabels && !isRightAxisLabels && !isBottomAxisLabels) {
+  const handlePlotAxisWheel = (event, plotId) => {
+    const axisZone = getPointerAxisZone(event);
+    if (!axisZone) {
+      return;
+    }
+
+    const armedAxis = axisWheelArmed[plotId] || null;
+    if (armedAxis !== axisZone) {
       return;
     }
 
@@ -453,7 +476,7 @@ export default function App() {
           return plot;
         }
 
-        if (isBottomAxisLabels) {
+        if (axisZone === "x") {
           if (plot.xMode === "window") {
             return {
               ...plot,
@@ -473,13 +496,12 @@ export default function App() {
           return plot;
         }
 
-        const axis = isRightAxisLabels ? "y2" : "y1";
-        if (plot[`${axis}Mode`] !== "manual") {
+        if (plot[`${axisZone}Mode`] !== "manual") {
           return plot;
         }
 
-        const minKey = `${axis}ManualMin`;
-        const maxKey = `${axis}ManualMax`;
+        const minKey = `${axisZone}ManualMin`;
+        const maxKey = `${axisZone}ManualMax`;
         const span = Math.max(1e-6, Number(plot[maxKey]) - Number(plot[minKey]));
         const step = Math.max(span / 120, 0.01);
         const shift = units * step;
@@ -1142,6 +1164,14 @@ export default function App() {
       })
       .flat();
 
+    const isAxisActive = (axis) => axisWheelArmed[plot.id] === axis;
+    const isAxisEditable = (axis) => {
+      if (axis === "x") {
+        return plot.xMode === "manual" || plot.xMode === "window";
+      }
+      return plot[`${axis}Mode`] === "manual";
+    };
+
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
@@ -1168,6 +1198,31 @@ export default function App() {
           y2={height - padding.bottom}
           stroke="#94a3b8"
           strokeWidth="1"
+        />
+
+        <rect
+          x={padding.left - 52}
+          y={padding.top}
+          width={48}
+          height={height - padding.top - padding.bottom}
+          className={`axis-control-box ${isAxisEditable("y1") ? "axis-control-box--editable" : ""} ${isAxisActive("y1") ? "axis-control-box--active" : ""}`}
+          onClick={() => isAxisEditable("y1") ? armAxisWheel(plot.id, "y1") : null}
+        />
+        <rect
+          x={width - padding.right + 4}
+          y={padding.top}
+          width={48}
+          height={height - padding.top - padding.bottom}
+          className={`axis-control-box ${isAxisEditable("y2") ? "axis-control-box--editable" : ""} ${isAxisActive("y2") ? "axis-control-box--active" : ""}`}
+          onClick={() => isAxisEditable("y2") ? armAxisWheel(plot.id, "y2") : null}
+        />
+        <rect
+          x={padding.left}
+          y={height - padding.bottom + 4}
+          width={width - padding.left - padding.right}
+          height={24}
+          className={`axis-control-box ${isAxisEditable("x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
+          onClick={() => isAxisEditable("x") ? armAxisWheel(plot.id, "x") : null}
         />
 
         {xMinorTicks.map((tick) => {
@@ -1619,7 +1674,7 @@ export default function App() {
                         </label>
                         {(plot.xMode === "manual" || plot.xMode === "window") ? (
                           <p className="plot-menu__muted">
-                            Ajusta con la rueda del ratón sobre etiquetas del eje X (Shift = ajuste grueso).
+                            Haz click en el recuadro del eje X para armar edición; luego rueda encima (Shift = ajuste grueso).
                           </p>
                         ) : null}
                         <label>
@@ -1631,7 +1686,7 @@ export default function App() {
                         </label>
                         {plot.y1Mode === "manual" ? (
                           <p className="plot-menu__muted">
-                            Ajusta con la rueda sobre etiquetas Y1 (lado izquierdo).
+                            Haz click en recuadro Y1 para armar edición; luego rueda encima.
                           </p>
                         ) : null}
                         <label>
@@ -1643,7 +1698,7 @@ export default function App() {
                         </label>
                         {plot.y2Mode === "manual" ? (
                           <p className="plot-menu__muted">
-                            Ajusta con la rueda sobre etiquetas Y2 (lado derecho).
+                            Haz click en recuadro Y2 para armar edición; luego rueda encima.
                           </p>
                         ) : null}
                       </div>

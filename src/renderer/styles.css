@@ -269,7 +269,34 @@ input {
 .plot__canvas svg {
   width: 100%;
   display: block;
+  user-select: none;
 }
+
+.plot__canvas text {
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.axis-control-box {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 1;
+  rx: 4px;
+  cursor: default;
+}
+
+.axis-control-box--editable {
+  fill: rgba(59, 130, 246, 0.03);
+  stroke: rgba(59, 130, 246, 0.22);
+  cursor: pointer;
+}
+
+.axis-control-box--active {
+  fill: rgba(59, 130, 246, 0.12);
+  stroke: rgba(37, 99, 235, 0.75);
+}
+
 .plot__canvas {
   flex: 1;
   min-height: 140px;
