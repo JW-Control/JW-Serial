@@ -99,3 +99,18 @@ npm run dev
 - `src/main`: proceso principal de Electron.
 - `src/renderer`: UI React + Vite.
 - `dist/renderer`: salida del build de Vite.
+
+
+## Generar ejecutable (.exe)
+```bash
+npm install
+npm run dist:win
+```
+
+Artifacts de Windows se generan en `release/`.
+
+También puedes usar doble click en:
+- `build-windows-exe.bat`
+
+Atajo adicional:
+- `npm run dist:portable` para generar ejecutable portable.
