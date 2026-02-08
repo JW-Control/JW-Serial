@@ -348,6 +348,8 @@ export default function App() {
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
 
+  const hasArmedAxis = useMemo(() => Object.values(axisWheelArmed).some(Boolean), [axisWheelArmed]);
+
   const statusTone = isPaused
     ? "paused"
     : connectionStatus === "connected"
@@ -461,6 +463,7 @@ export default function App() {
     }
 
     event.preventDefault();
+    event.stopPropagation();
 
     const axisZone = getPointerAxisZone(event);
     if (!axisZone || armedAxis !== axisZone) {
@@ -514,6 +517,14 @@ export default function App() {
     );
   };
 
+  const handlePlotterWheelCapture = (event) => {
+    if (!hasArmedAxis) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   const openVariableMenu = (event, channelId) => {
     event.preventDefault();
     const menuWidth = 250;
@@ -528,9 +539,11 @@ export default function App() {
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
     const menuWidth = 300;
-    const menuHeight = 280;
+    const menuHeight = 340;
     const x = clamp(event.clientX, 8, window.innerWidth - menuWidth - 8);
-    const y = clamp(event.clientY, 8, window.innerHeight - menuHeight - 8);
+    const y = event.clientY + menuHeight > window.innerHeight - 8
+      ? Math.max(8, event.clientY - menuHeight)
+      : clamp(event.clientY, 8, window.innerHeight - menuHeight - 8);
     setContextMenu({
       plotId,
       x,
@@ -1519,7 +1532,7 @@ export default function App() {
         </div>
 
         {activeTab === "plotter" ? (
-          <div className="plots" data-version={dataVersion}>
+          <div className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
             {plots.map((plot) => {
               const draft = getDraft(plot.id);
               const assignmentOptions = plot.assignments.map(
