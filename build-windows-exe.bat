@@ -1,12 +1,19 @@
 @echo off
-setlocal
+setlocal EnableExtensions
+
+REM Relaunch in persistent console so output never closes on double click
+if /I not "%~1"=="--inner" (
+  cmd /k "\"%~f0\" --inner"
+  exit /b
+)
+shift /1
 
 cd /d "%~dp0"
 title JW-Serial - Build EXE
 
 echo ==================================================
 echo   JW-Serial ^| Build Windows executable
- echo ==================================================
+echo ==================================================
 echo.
 
 where node >nul 2>&1
@@ -14,8 +21,7 @@ if errorlevel 1 (
   echo [ERROR] Node.js no esta instalado o no esta en PATH.
   echo Instala Node LTS desde: https://nodejs.org/
   echo.
-  pause
-  exit /b 1
+  goto :fail
 )
 
 where npm >nul 2>&1
@@ -23,17 +29,15 @@ if errorlevel 1 (
   echo [ERROR] npm no esta disponible en PATH.
   echo Reinstala Node.js LTS.
   echo.
-  pause
-  exit /b 1
+  goto :fail
 )
 
 where npx >nul 2>&1
 if errorlevel 1 (
   echo [ERROR] npx no esta disponible en PATH.
-  echo Reinstala Node.js LTS (npx viene incluido).
+  echo Reinstala Node.js LTS ^(npx viene incluido^).
   echo.
-  pause
-  exit /b 1
+  goto :fail
 )
 
 if not exist node_modules (
@@ -43,8 +47,7 @@ if not exist node_modules (
     echo.
     echo [ERROR] npm install fallo. Revisa conectividad/permisos.
     echo.
-    pause
-    exit /b 1
+    goto :fail
   )
 )
 
@@ -61,12 +64,11 @@ if not "%BUILD_EXIT%"=="0" (
   echo   - Dependencias nativas pendientes
   echo.
   echo Recomendado:
-  echo   1) npm install --include=dev
-  echo   2) npm i -D electron-builder
-  echo   3) npm run dist:win
+  echo   1^) npm install --include=dev
+  echo   2^) npm i -D electron-builder
+  echo   3^) npm run dist:win
   echo.
-  pause
-  exit /b %BUILD_EXIT%
+  goto :fail_with_code
 )
 
 echo [OK] Build completado.
@@ -79,5 +81,15 @@ echo.
 echo Este script construye el EXE/instalador. No inicia automaticamente la app.
 echo Ejecuta el archivo generado dentro de release.
 echo.
-pause
+goto :end
+
+:fail_with_code
+echo [FAIL] El proceso termino con error.
+exit /b %BUILD_EXIT%
+
+:fail
+echo [FAIL] El proceso termino con error.
+exit /b 1
+
+:end
 exit /b 0
