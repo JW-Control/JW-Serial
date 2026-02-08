@@ -443,7 +443,7 @@ export default function App() {
     if (relativeX >= 0.92) {
       return "y2";
     }
-    if (relativeY >= 0.9 && relativeX > 0.08 && relativeX < 0.92) {
+    if (relativeY >= 0.84 && relativeX > 0.06 && relativeX < 0.94) {
       return "x";
     }
     return null;
@@ -634,9 +634,14 @@ export default function App() {
 
         if (axisZone === "x") {
           if (candidate.xMode === "window") {
+            const currentSeconds = Math.max(0.1, Number(candidate.xWindowSize) || 10);
+            const direction = units > 0 ? 1 : -1;
+            const nextSeconds = event.shiftKey
+              ? currentSeconds * (direction > 0 ? 0.9 : 1.1)
+              : currentSeconds + direction;
             return {
               ...candidate,
-              xWindowSize: clamp((Number(candidate.xWindowSize) || 10) + units, 1, 36000)
+              xWindowSize: Number(clamp(nextSeconds, 0.1, 36000).toFixed(3))
             };
           }
           if (candidate.xMode === "manual") {
@@ -644,11 +649,15 @@ export default function App() {
             const max = Number(candidate.xManualMax);
             const center = (min + max) / 2;
             const span = Math.max(1e-6, max - min);
-            const nextSpan = Math.max(1e-6, span - units * Math.max(span * 0.08, 0.5));
+            const direction = units > 0 ? 1 : -1;
+            const nextSpan = event.shiftKey
+              ? span * (direction > 0 ? 0.9 : 1.1)
+              : span - direction * Math.max(span * 0.015, 0.1);
+            const safeSpan = Math.max(1e-6, nextSpan);
             return {
               ...candidate,
-              xManualMin: Number((center - nextSpan / 2).toFixed(6)),
-              xManualMax: Number((center + nextSpan / 2).toFixed(6))
+              xManualMin: Number((center - safeSpan / 2).toFixed(6)),
+              xManualMax: Number((center + safeSpan / 2).toFixed(6))
             };
           }
           return candidate;
@@ -1862,7 +1871,7 @@ export default function App() {
                         </label>
                         {(plot.xMode === "manual" || plot.xMode === "window") ? (
                           <p className="plot-menu__muted">
-                            Pasa el mouse sobre la zona X y usa rueda (Shift = salto de 10).
+                            Pasa el mouse sobre zona X: rueda = ±1 s, Shift = escala x0.9 / x1.1.
                           </p>
                         ) : null}
                         <label>
