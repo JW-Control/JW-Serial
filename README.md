@@ -95,6 +95,15 @@ npm install
 npm run dev
 ```
 
+También puedes iniciar desarrollo con doble click en:
+- `start-dev.bat`
+
+Ese `.bat`:
+- valida Node/npm,
+- ejecuta `npm install`,
+- ejecuta `npm run dev`,
+- mantiene la consola abierta para que puedas leer errores.
+
 ## Estructura inicial
 - `src/main`: proceso principal de Electron.
 - `src/renderer`: UI React + Vite.
