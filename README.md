@@ -112,5 +112,11 @@ Artifacts de Windows se generan en `release/`.
 También puedes usar doble click en:
 - `build-windows-exe.bat`
 
+Ese `.bat` ahora:
+- valida Node/npm,
+- ejecuta `npm install` si faltan dependencias,
+- **no cierra la ventana automáticamente** (deja `pause`),
+- abre la carpeta `release/` al terminar.
+
 Atajo adicional:
 - `npm run dist:portable` para generar ejecutable portable.
