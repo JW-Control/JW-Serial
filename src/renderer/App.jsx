@@ -424,11 +424,9 @@ export default function App() {
 
 
   const getWheelUnits = (event) => {
-    const fast = Math.abs(event.deltaY) > 80;
-    const base = fast ? 5 : 1;
-    const scale = event.shiftKey ? 10 : 1;
+    const base = event.shiftKey ? 10 : 1;
     const direction = event.deltaY < 0 ? 1 : -1;
-    return direction * base * scale;
+    return direction * base;
   };
 
   const armAxisWheel = (plotId, axis) => {
@@ -457,17 +455,18 @@ export default function App() {
   };
 
   const handlePlotAxisWheel = (event, plotId) => {
-    const axisZone = getPointerAxisZone(event);
-    if (!axisZone) {
-      return;
-    }
-
     const armedAxis = axisWheelArmed[plotId] || null;
-    if (armedAxis !== axisZone) {
+    if (!armedAxis) {
       return;
     }
 
     event.preventDefault();
+
+    const axisZone = getPointerAxisZone(event);
+    if (!axisZone || armedAxis !== axisZone) {
+      return;
+    }
+
     const units = getWheelUnits(event);
 
     setPlots((prev) =>
@@ -884,6 +883,30 @@ export default function App() {
     return () => window.removeEventListener("pointerdown", close);
   }, [contextMenu, variableMenu]);
 
+
+  useEffect(() => {
+    setAxisWheelArmed((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      plots.forEach((plot) => {
+        const armed = next[plot.id];
+        if (!armed) {
+          return;
+        }
+        const editable = armed === "x"
+          ? plot.xMode === "manual" || plot.xMode === "window"
+          : plot[`${armed}Mode`] === "manual";
+        if (!editable) {
+          next[plot.id] = null;
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [plots]);
+
   useEffect(() => {
     if (!plotResize) {
       return undefined;
@@ -1201,26 +1224,26 @@ export default function App() {
         />
 
         <rect
-          x={padding.left - 52}
-          y={padding.top}
-          width={48}
-          height={height - padding.top - padding.bottom}
+          x={padding.left - 44}
+          y={padding.top + 6}
+          width={34}
+          height={height - padding.top - padding.bottom - 12}
           className={`axis-control-box ${isAxisEditable("y1") ? "axis-control-box--editable" : ""} ${isAxisActive("y1") ? "axis-control-box--active" : ""}`}
           onClick={() => isAxisEditable("y1") ? armAxisWheel(plot.id, "y1") : null}
         />
         <rect
-          x={width - padding.right + 4}
-          y={padding.top}
-          width={48}
-          height={height - padding.top - padding.bottom}
+          x={width - padding.right + 10}
+          y={padding.top + 6}
+          width={34}
+          height={height - padding.top - padding.bottom - 12}
           className={`axis-control-box ${isAxisEditable("y2") ? "axis-control-box--editable" : ""} ${isAxisActive("y2") ? "axis-control-box--active" : ""}`}
           onClick={() => isAxisEditable("y2") ? armAxisWheel(plot.id, "y2") : null}
         />
         <rect
-          x={padding.left}
-          y={height - padding.bottom + 4}
-          width={width - padding.left - padding.right}
-          height={24}
+          x={padding.left + 4}
+          y={height - 18}
+          width={width - padding.left - padding.right - 8}
+          height={16}
           className={`axis-control-box ${isAxisEditable("x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
           onClick={() => isAxisEditable("x") ? armAxisWheel(plot.id, "x") : null}
         />
@@ -1286,7 +1309,7 @@ export default function App() {
                 x={x}
                 y={height - 6}
                 textAnchor="middle"
-                fontSize="11px"
+                fontSize="12px"
                 fill="#64748b"
               >
                 {formatTick(tick, xTicksData.step)}
@@ -1311,7 +1334,7 @@ export default function App() {
                 x={padding.left - 8}
                 y={y + 3}
                 textAnchor="end"
-                fontSize="11px"
+                fontSize="12px"
                 fill="#64748b"
               >
                 {formatTick(tick, y1TicksData.step)}
@@ -1328,7 +1351,7 @@ export default function App() {
               x={width - 8}
               y={y + 3}
               textAnchor="end"
-              fontSize="11px"
+              fontSize="12px"
               fill="#64748b"
             >
               {formatTick(tick, y2TicksData.step)}
@@ -1674,7 +1697,7 @@ export default function App() {
                         </label>
                         {(plot.xMode === "manual" || plot.xMode === "window") ? (
                           <p className="plot-menu__muted">
-                            Haz click en el recuadro del eje X para armar edición; luego rueda encima (Shift = ajuste grueso).
+                            Haz click en el recuadro del eje X para armar edición; luego rueda encima (Shift = salto de 10).
                           </p>
                         ) : null}
                         <label>
