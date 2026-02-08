@@ -576,7 +576,7 @@ export default function App() {
         const minKey = `${axisDrag.axis}ManualMin`;
         const maxKey = `${axisDrag.axis}ManualMax`;
         const span = Math.max(1e-6, Number(candidate[maxKey]) - Number(candidate[minKey]));
-        const valueShift = (-deltaY / pixelHeight) * span;
+        const valueShift = (deltaY / pixelHeight) * span;
         return {
           ...candidate,
           [minKey]: Number((Number(candidate[minKey]) + valueShift).toFixed(6)),
@@ -676,7 +676,6 @@ export default function App() {
 
   const handlePlotterWheelCapture = (event) => {
     event.preventDefault();
-    event.stopPropagation();
   };
 
   const openVariableMenu = (event, channelId) => {
