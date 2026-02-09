@@ -30,14 +30,6 @@ if errorlevel 1 (
   goto :fail
 )
 
-echo [INFO] Ejecutando: npm install
-call npm install
-if errorlevel 1 (
-  echo.
-  echo [ERROR] npm install fallo. Revisa conectividad/permisos.
-  goto :fail
-)
-
 echo.
 echo [INFO] Ejecutando: npm run dev
 call npm run dev
