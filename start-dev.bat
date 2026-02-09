@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 REM Mantener consola abierta al ejecutar con doble click
 if /I not "%~1"=="--inner" (
-  cmd /k "\"%~f0\" --inner"
+  cmd /k ""%~f0" --inner"
   exit /b
 )
 shift /1

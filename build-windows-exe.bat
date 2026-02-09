@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 REM Relaunch in persistent console so output never closes on double click
 if /I not "%~1"=="--inner" (
-  cmd /k "\"%~f0\" --inner"
+  cmd /k ""%~f0" --inner"
   exit /b
 )
 shift /1
