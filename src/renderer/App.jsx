@@ -64,19 +64,35 @@ const buildPath = (points) =>
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(" ");
 
-const preferredSteps = [0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000];
+const minStep = 0.05;
 
 const pickStep = (range, targetTicks = 6) => {
   if (range <= 0 || Number.isNaN(range)) {
-    return preferredSteps[0];
+    return minStep;
   }
-  const target = range / targetTicks;
-  const found = preferredSteps.find((step) => step >= target);
-  if (found) {
-    return found;
+
+  const target = Math.max(minStep, range / targetTicks);
+  const exponent = Math.floor(Math.log10(target));
+  const base = 10 ** exponent;
+  const candidates = [5 * base, 10 * base].filter((step) => step >= minStep);
+
+  for (const candidate of candidates) {
+    if (candidate >= target) {
+      return candidate;
+    }
   }
-  const magnitude = 10 ** Math.floor(Math.log10(target));
-  return Math.ceil(target / magnitude) * magnitude;
+
+  return Math.max(minStep, 5 * 10 ** (exponent + 1));
+};
+
+const getStepDivisionBase = (step) => {
+  if (!Number.isFinite(step) || step <= 0) {
+    return 10;
+  }
+
+  const exponent = Math.floor(Math.log10(step));
+  const normalized = step / 10 ** exponent;
+  return Math.abs(normalized - 5) < 1e-9 ? 5 : 10;
 };
 
 const makeTicks = (minValue, maxValue, targetTicks = 6) => {
@@ -363,6 +379,13 @@ export default function App() {
     advancedConfig,
     baudRate,
     selectedPort,
+    channels: channels.map(({ id, name, color, lineStyle, thickness }) => ({
+      id,
+      name,
+      color,
+      lineStyle,
+      thickness
+    })),
     plots
   });
 
@@ -934,8 +957,10 @@ export default function App() {
   const applyConfigText = () => {
     try {
       const parsed = JSON.parse(configText);
+      const nextBasicConfig = parsed.basicConfig ? { ...basicConfig, ...parsed.basicConfig } : basicConfig;
+
       if (parsed.basicConfig) {
-        setBasicConfig(parsed.basicConfig);
+        setBasicConfig(nextBasicConfig);
       }
       if (parsed.advancedConfig) {
         setAdvancedConfig(parsed.advancedConfig);
@@ -948,6 +973,12 @@ export default function App() {
       }
       if (parsed.plots) {
         setPlots(parsed.plots);
+      }
+      if (Array.isArray(parsed.channels)) {
+        const preferredCount = nextBasicConfig.channelCount > 0
+          ? nextBasicConfig.channelCount
+          : parsed.channels.length;
+        setChannels(normalizeChannels(preferredCount, parsed.channels));
       }
       setConfigMessage("Configuración aplicada.");
     } catch (_error) {
@@ -1180,9 +1211,9 @@ export default function App() {
       ? makeXTicks(Number(plot.xManualMin ?? xMin), Number(plot.xManualMax ?? xMax), xTargetTicks)
       : makeXTicks(xMin, xMax + rightPad, xTargetTicks);
 
-    const xMinorTicks = makeMinorTicks(xTicksData, 10);
-    const y1MinorTicks = makeMinorTicks(y1TicksData, 10);
-    const y2MinorTicks = makeMinorTicks(y2TicksData, 10);
+    const xMinorTicks = makeMinorTicks(xTicksData, getStepDivisionBase(xTicksData.step));
+    const y1MinorTicks = makeMinorTicks(y1TicksData, getStepDivisionBase(y1TicksData.step));
+    const y2MinorTicks = makeMinorTicks(y2TicksData, getStepDivisionBase(y2TicksData.step));
 
     const yTickToPx = (value, ticksData) => {
       const ratio = (value - ticksData.min) / (ticksData.max - ticksData.min || 1);
