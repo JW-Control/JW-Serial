@@ -19,7 +19,7 @@ let readBuffer = "";
 let validFrameStreak = 0;
 let portConfig = {
   expectedChannels: 0,
-  minValidFrames: 3,
+  minValidFrames: 1,
   includeTimestamp: false
 };
 
@@ -197,7 +197,7 @@ ipcMain.handle("serial:open", async (_event, options) => {
 
   portConfig = {
     expectedChannels: Number(options.expectedChannels || 0),
-    minValidFrames: Number(options.minValidFrames || 3),
+    minValidFrames: Math.max(1, Number(options.minValidFrames || 1)),
     includeTimestamp: Boolean(options.includeTimestamp)
   };
 

@@ -300,7 +300,7 @@ const buildSeries = (
   const points = samples.map((sample, sampleIndex) => {
     const value = sample.values[index] ?? 0;
     const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
-    const normalizedY = (value - minY) / (maxY - minY || 1);
+    const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
     return {
       x: padding.left + normalizedX * (width - padding.left - padding.right),
       y:
@@ -350,7 +350,7 @@ export default function App() {
     refreshMs: 100,
     plotMode: "normal",
     includeTimestamp: false,
-    minValidFrames: 3
+    minValidFrames: 1
   });
 
   const [advancedConfig, setAdvancedConfig] = useState({
@@ -474,9 +474,35 @@ export default function App() {
 
   const isAxisEditable = (plot, axis) => {
     if (axis === "x") {
-      return plot.xMode === "manual" || plot.xMode === "window";
+      return true;
     }
     return plot[`${axis}Mode`] === "manual";
+  };
+
+  const toggleXAxisAuto = (plotId, enabled) => {
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+
+        if (enabled) {
+          return { ...plot, xMode: "auto" };
+        }
+
+        const auto = computeAxisAutoRange(plot, "x");
+        if (!auto) {
+          return { ...plot, xMode: "manual" };
+        }
+
+        return {
+          ...plot,
+          xMode: "manual",
+          xManualMin: Number(auto.min.toFixed(6)),
+          xManualMax: Number(auto.max.toFixed(6))
+        };
+      })
+    );
   };
 
   const getSamplesForPlot = (plot) => {
@@ -656,15 +682,35 @@ export default function App() {
         }
 
         if (axisZone === "x") {
+          const totalSeconds = Math.max(0.1, historyRef.current.length / Math.max(1, basicConfig.samplesPerSecond));
+          const currentSeconds = Math.max(0.1, Number(candidate.xWindowSize) || Math.min(10, totalSeconds));
+          const direction = units > 0 ? 1 : -1;
+
           if (candidate.xMode === "window") {
-            const currentSeconds = Math.max(0.1, Number(candidate.xWindowSize) || 10);
-            const direction = units > 0 ? 1 : -1;
             const nextSeconds = event.shiftKey
-              ? currentSeconds * (direction > 0 ? 0.9 : 1.1)
-              : currentSeconds + direction;
+              ? currentSeconds + direction
+              : currentSeconds * (direction > 0 ? 0.9 : 1.1);
+            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
+            if (clamped >= totalSeconds - 1e-6) {
+              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
+            }
             return {
               ...candidate,
-              xWindowSize: Number(clamp(nextSeconds, 0.1, 36000).toFixed(3))
+              xWindowSize: Number(clamped.toFixed(3))
+            };
+          }
+          if (candidate.xMode === "auto") {
+            const nextSeconds = event.shiftKey
+              ? currentSeconds + direction
+              : currentSeconds * (direction > 0 ? 0.9 : 1.1);
+            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
+            if (clamped >= totalSeconds - 1e-6) {
+              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
+            }
+            return {
+              ...candidate,
+              xMode: "window",
+              xWindowSize: Number(clamped.toFixed(3))
             };
           }
           if (candidate.xMode === "manual") {
@@ -672,10 +718,9 @@ export default function App() {
             const max = Number(candidate.xManualMax);
             const center = (min + max) / 2;
             const span = Math.max(1e-6, max - min);
-            const direction = units > 0 ? 1 : -1;
             const nextSpan = event.shiftKey
-              ? span * (direction > 0 ? 0.9 : 1.1)
-              : span - direction * Math.max(span * 0.015, 0.1);
+              ? span - direction * Math.max(span * 0.015, 0.1)
+              : span * (direction > 0 ? 0.9 : 1.1);
             const safeSpan = Math.max(1e-6, nextSpan);
             return {
               ...candidate,
@@ -1396,9 +1441,23 @@ export default function App() {
       .flat();
 
     const isAxisActive = (axis) => hoverAxisByPlot[plot.id] === axis && isAxisEditable(plot, axis);
+    const xAutoEnabled = plot.xMode !== "manual";
+    const y1AutoEnabled = plot.y1Mode === "auto";
+    const y2AutoEnabled = plot.y2Mode === "auto";
+    const plotClipId = `plot-clip-${plot.id}`;
 
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <defs>
+          <clipPath id={plotClipId}>
+            <rect
+              x={padding.left}
+              y={padding.top}
+              width={width - padding.left - padding.right}
+              height={height - padding.top - padding.bottom}
+            />
+          </clipPath>
+        </defs>
         <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
         <line
           x1={padding.left}
@@ -1449,6 +1508,19 @@ export default function App() {
           className={`axis-control-box ${isAxisEditable(plot, "x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
           
         />
+
+        <g role="button" tabIndex={0} onClick={() => handleModeChange(plot.id, "y1", y1AutoEnabled ? "manual" : "auto")}>
+          <rect x={padding.left - 40} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
+          {y1AutoEnabled ? <path d={`M ${padding.left - 38} ${padding.top - 7} L ${padding.left - 36} ${padding.top - 5} L ${padding.left - 32} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+        </g>
+        <g role="button" tabIndex={0} onClick={() => handleModeChange(plot.id, "y2", y2AutoEnabled ? "manual" : "auto")}>
+          <rect x={width - padding.right + 14} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
+          {y2AutoEnabled ? <path d={`M ${width - padding.right + 16} ${padding.top - 7} L ${width - padding.right + 18} ${padding.top - 5} L ${width - padding.right + 22} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+        </g>
+        <g role="button" tabIndex={0} onClick={() => toggleXAxisAuto(plot.id, !xAutoEnabled)}>
+          <rect x={width / 2 - 5} y={height - 16} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
+          {xAutoEnabled ? <path d={`M ${width / 2 - 3} ${height - 11} L ${width / 2 - 1} ${height - 9} L ${width / 2 + 3} ${height - 14}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+        </g>
 
         {xMinorTicks.map((tick) => {
           const x = xTickToPx(tick);
@@ -1560,8 +1632,10 @@ export default function App() {
             </text>
           );
         })}
-        {lines}
-        {statCurves}
+        <g clipPath={`url(#${plotClipId})`}>
+          {lines}
+          {statCurves}
+        </g>
       </svg>
     );
   };
@@ -1892,37 +1966,39 @@ export default function App() {
 
                       <div className="plot-menu__section">
                         <strong>Modes</strong>
-                        <label>
-                          X mode
-                          <select value={plot.xMode} onChange={(event) => handleModeChange(plot.id, "x", event.target.value)}>
-                            <option value="auto">Automático</option>
-                            <option value="window">Ventana deslizante</option>
-                            <option value="manual">Manual</option>
-                          </select>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={plot.xMode !== "manual"}
+                            onChange={(event) => toggleXAxisAuto(plot.id, event.target.checked)}
+                          />
+                          X auto/ventana
                         </label>
-                        {(plot.xMode === "manual" || plot.xMode === "window") ? (
+                        {isAxisEditable(plot, "x") ? (
                           <p className="plot-menu__muted">
-                            Pasa el mouse sobre zona X: rueda = ±1 s, Shift = escala x0.9 / x1.1.
+                            Pasa el mouse sobre zona X: rueda = zoom ventana, Shift = ±1 s.
                           </p>
                         ) : null}
-                        <label>
-                          Y1 mode
-                          <select value={plot.y1Mode} onChange={(event) => handleModeChange(plot.id, "y1", event.target.value)}>
-                            <option value="auto">Automático</option>
-                            <option value="manual">Manual</option>
-                          </select>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={plot.y1Mode === "auto"}
+                            onChange={(event) => handleModeChange(plot.id, "y1", event.target.checked ? "auto" : "manual")}
+                          />
+                          Y1 automático
                         </label>
                         {plot.y1Mode === "manual" ? (
                           <p className="plot-menu__muted">
                             Pasa el mouse sobre zona Y1 y usa rueda; arrastra con click izquierdo para deslizar.
                           </p>
                         ) : null}
-                        <label>
-                          Y2 mode
-                          <select value={plot.y2Mode} onChange={(event) => handleModeChange(plot.id, "y2", event.target.value)}>
-                            <option value="auto">Automático</option>
-                            <option value="manual">Manual</option>
-                          </select>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={plot.y2Mode === "auto"}
+                            onChange={(event) => handleModeChange(plot.id, "y2", event.target.checked ? "auto" : "manual")}
+                          />
+                          Y2 automático
                         </label>
                         {plot.y2Mode === "manual" ? (
                           <p className="plot-menu__muted">
@@ -2049,7 +2125,7 @@ export default function App() {
                       min="1"
                       value={basicConfig.minValidFrames}
                       onChange={(event) =>
-                        updateBasicConfig("minValidFrames", Number(event.target.value))
+                        updateBasicConfig("minValidFrames", Math.max(1, Number(event.target.value) || 1))
                       }
                     />
                   </label>
