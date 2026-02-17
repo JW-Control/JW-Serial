@@ -687,9 +687,8 @@ export default function App() {
           const direction = units > 0 ? 1 : -1;
 
           if (candidate.xMode === "window") {
-            const nextSeconds = event.shiftKey
-              ? currentSeconds + direction
-              : currentSeconds * (direction > 0 ? 0.9 : 1.1);
+            const secondStep = event.shiftKey ? 10 : 1;
+            const nextSeconds = currentSeconds + direction * secondStep;
             const clamped = clamp(nextSeconds, 0.1, totalSeconds);
             if (clamped >= totalSeconds - 1e-6) {
               return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
@@ -700,9 +699,8 @@ export default function App() {
             };
           }
           if (candidate.xMode === "auto") {
-            const nextSeconds = event.shiftKey
-              ? currentSeconds + direction
-              : currentSeconds * (direction > 0 ? 0.9 : 1.1);
+            const secondStep = event.shiftKey ? 10 : 1;
+            const nextSeconds = currentSeconds + direction * secondStep;
             const clamped = clamp(nextSeconds, 0.1, totalSeconds);
             if (clamped >= totalSeconds - 1e-6) {
               return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
@@ -718,10 +716,10 @@ export default function App() {
             const max = Number(candidate.xManualMax);
             const center = (min + max) / 2;
             const span = Math.max(1e-6, max - min);
-            const nextSpan = event.shiftKey
-              ? span - direction * Math.max(span * 0.015, 0.1)
-              : span * (direction > 0 ? 0.9 : 1.1);
-            const safeSpan = Math.max(1e-6, nextSpan);
+            const scale = event.shiftKey
+              ? (direction > 0 ? 0.8 : 1.2)
+              : (direction > 0 ? 0.95 : 1.05);
+            const safeSpan = Math.max(1e-6, span * scale);
             return {
               ...candidate,
               xManualMin: Number((center - safeSpan / 2).toFixed(6)),
@@ -1274,11 +1272,11 @@ export default function App() {
       return padding.left + ratio * (width - padding.left - padding.right);
     };
 
-    const y1VisibleTicks = filterTicksByPixelGap(y1TicksData.ticks, (tick) => yTickToPx(tick, y1TicksData), 10)
+    const y1VisibleTicks = y1TicksData.ticks
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y1TicksData.step) !== formatTick(arr[index - 1], y1TicksData.step));
-    const y2VisibleTicks = filterTicksByPixelGap(y2TicksData.ticks, (tick) => yTickToPx(tick, y2TicksData), 10)
+    const y2VisibleTicks = y2TicksData.ticks
       .filter((tick, index, arr) => index === 0 || formatTick(tick, y2TicksData.step) !== formatTick(arr[index - 1], y2TicksData.step));
-    const xVisibleTicks = filterTicksByPixelGap(xTicksData.ticks, xTickToPx, 64)
+    const xVisibleTicks = xTicksData.ticks
       .filter((tick, index, arr) => index === 0 || formatTick(tick, xTicksData.step) !== formatTick(arr[index - 1], xTicksData.step));
 
     const getStatWindow = () => {
@@ -1509,17 +1507,17 @@ export default function App() {
           
         />
 
-        <g role="button" tabIndex={0} onClick={() => handleModeChange(plot.id, "y1", y1AutoEnabled ? "manual" : "auto")}>
+        <g onClick={() => handleModeChange(plot.id, "y1", y1AutoEnabled ? "manual" : "auto")}>
           <rect x={padding.left - 40} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
           {y1AutoEnabled ? <path d={`M ${padding.left - 38} ${padding.top - 7} L ${padding.left - 36} ${padding.top - 5} L ${padding.left - 32} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
         </g>
-        <g role="button" tabIndex={0} onClick={() => handleModeChange(plot.id, "y2", y2AutoEnabled ? "manual" : "auto")}>
+        <g onClick={() => handleModeChange(plot.id, "y2", y2AutoEnabled ? "manual" : "auto")}>
           <rect x={width - padding.right + 14} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
           {y2AutoEnabled ? <path d={`M ${width - padding.right + 16} ${padding.top - 7} L ${width - padding.right + 18} ${padding.top - 5} L ${width - padding.right + 22} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
         </g>
-        <g role="button" tabIndex={0} onClick={() => toggleXAxisAuto(plot.id, !xAutoEnabled)}>
-          <rect x={width / 2 - 5} y={height - 16} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
-          {xAutoEnabled ? <path d={`M ${width / 2 - 3} ${height - 11} L ${width / 2 - 1} ${height - 9} L ${width / 2 + 3} ${height - 14}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+        <g onClick={() => toggleXAxisAuto(plot.id, !xAutoEnabled)}>
+          <rect x={padding.left + 10} y={height - 16} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
+          {xAutoEnabled ? <path d={`M ${padding.left + 12} ${height - 11} L ${padding.left + 14} ${height - 9} L ${padding.left + 18} ${height - 14}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
         </g>
 
         {xMinorTicks.map((tick) => {
@@ -1976,7 +1974,7 @@ export default function App() {
                         </label>
                         {isAxisEditable(plot, "x") ? (
                           <p className="plot-menu__muted">
-                            Pasa el mouse sobre zona X: rueda = zoom ventana, Shift = ±1 s.
+                            Pasa el mouse sobre zona X: rueda = ±1 s, Shift+rueda = ±10 s.
                           </p>
                         ) : null}
                         <label className="checkbox-row">
