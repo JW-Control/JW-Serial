@@ -1,6 +1,6 @@
 {
   "name": "jw-serial",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Serial plotter MVP (Electron + React + Vite)",
   "main": "src/main/main.js",
@@ -11,8 +11,10 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "build:renderer": "vite build",
-    "dist:win": "npm run build:renderer && npx --yes electron-builder --win nsis",
-    "dist:portable": "npm run build:renderer && npx --yes electron-builder --win portable",
+    "dist:win": "npm run build:renderer && npm run dist:setup:only && npm run dist:portable:only",
+    "dist:setup:only": "npx --yes electron-builder --win nsis --x64 --publish never --config.win.target=nsis",
+    "dist:portable:only": "npx --yes electron-builder --win portable --x64 --publish never --config.win.target=portable",
+    "dist:portable": "npm run build:renderer && npm run dist:portable:only",
     "dist": "npm run dist:win"
   },
   "dependencies": {
@@ -44,18 +46,26 @@
     "files": [
       "dist/renderer/**/*",
       "src/main/**/*",
+      "build/icon.ico",
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
         "portable"
-      ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      ]
     },
     "nsis": {
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
     }
   }
 }

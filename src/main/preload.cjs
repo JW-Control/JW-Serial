@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld("jwSerial", {
   openPort: (options) => ipcRenderer.invoke("serial:open", options),
   closePort: () => ipcRenderer.invoke("serial:close"),
   sendMessage: (message) => ipcRenderer.invoke("serial:send", message),
+  saveConfigFile: (payload) => ipcRenderer.invoke("config:save-file", payload),
+  loadConfigFile: () => ipcRenderer.invoke("config:load-file"),
+  chooseCaptureDirectory: () => ipcRenderer.invoke("capture:choose-directory"),
+  openCaptureDirectory: (directory) => ipcRenderer.invoke("capture:open-directory", directory),
+  appendSessionEvent: (options) => ipcRenderer.invoke("session:append-event", options),
+  capturePlot: (options) => ipcRenderer.invoke("capture:plot", options),
+  savePlotImage: (options) => ipcRenderer.invoke("capture:save-plot-image", options),
   onFrame: (handler) => {
     const wrapped = (_event, payload) => handler(payload);
     ipcRenderer.on("serial:frame", wrapped);

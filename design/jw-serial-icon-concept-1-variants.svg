@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="250" viewBox="0 0 560 250">
+  <defs>
+    <linearGradient id="tileBg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#12213a"/>
+      <stop offset="1" stop-color="#07111f"/>
+    </linearGradient>
+    <linearGradient id="tileBg2" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#102544"/>
+      <stop offset="1" stop-color="#071222"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" x2="1">
+      <stop offset="0" stop-color="#9ce7ff"/>
+      <stop offset="1" stop-color="#4e9dff"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" x2="1">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#f07a00"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000" flood-opacity=".4"/>
+    </filter>
+    <style>
+      .tile { fill: url(#tileBg); stroke: #3a5b8f; stroke-width: 2; filter: url(#shadow); }
+      .tile2 { fill: url(#tileBg2); stroke: #3a5b8f; stroke-width: 2; filter: url(#shadow); }
+      .label { font: 13px system-ui, Segoe UI, sans-serif; fill: #dbe8fb; text-anchor: middle; }
+      .mono { font-family: Segoe UI, system-ui, sans-serif; font-weight: 850; fill: #f5f9ff; }
+      .grid { stroke: #263a5a; stroke-width: 1; opacity: .55; }
+      .cyan { stroke: url(#cyan); fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .orange { stroke: url(#orange); fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .dotC { fill: #91ddff; }
+      .dotO { fill: #f28a12; }
+      .white { fill: #f5f9ff; }
+    </style>
+  </defs>
+
+  <rect width="560" height="250" rx="18" fill="#0b1220"/>
+
+  <!-- A: monograma superior + señal inferior -->
+  <g transform="translate(42 34)">
+    <rect class="tile" width="64" height="64" rx="15"/>
+    <text class="mono" x="13" y="27" font-size="20">J</text>
+    <text class="mono" x="29" y="27" font-size="20">W</text>
+    <path class="cyan" stroke-width="4" d="M11 46 C18 46 18 35 25 35 S32 57 39 46 S46 29 55 29"/>
+    <circle cx="11" cy="46" r="2.7" class="dotC"/>
+    <circle cx="55" cy="29" r="2.7" class="dotO"/>
+    <text class="label" x="32" y="95">A</text>
+  </g>
+
+  <!-- B: monograma centrado + señal integrada -->
+  <g transform="translate(148 34)">
+    <rect class="tile" width="64" height="64" rx="15"/>
+    <text class="mono" x="12" y="38" font-size="25">J</text>
+    <text class="mono" x="30" y="38" font-size="25">W</text>
+    <path class="orange" stroke-width="3.5" d="M10 49 C18 40 26 54 34 45 S47 33 55 40"/>
+    <circle cx="10" cy="49" r="2.5" class="dotO"/>
+    <circle cx="55" cy="40" r="2.5" class="dotC"/>
+    <text class="label" x="32" y="95">B</text>
+  </g>
+
+  <!-- C: JW + mini grilla -->
+  <g transform="translate(254 34)">
+    <rect class="tile2" width="64" height="64" rx="15"/>
+    <g>
+      <path class="grid" d="M10 34 H55 M10 44 H55 M10 54 H55"/>
+      <path class="grid" d="M18 30 V56 M30 30 V56 M42 30 V56 M54 30 V56"/>
+    </g>
+    <text class="mono" x="11" y="27" font-size="19">J</text>
+    <text class="mono" x="28" y="27" font-size="19">W</text>
+    <path class="orange" stroke-width="3.4" d="M10 51 L18 47 L27 50 L36 39 L45 42 L55 33"/>
+    <text class="label" x="32" y="95">C</text>
+  </g>
+
+  <!-- D: serial pins + waveform -->
+  <g transform="translate(360 34)">
+    <rect class="tile" width="64" height="64" rx="15"/>
+    <text class="mono" x="12" y="27" font-size="19">J</text>
+    <text class="mono" x="29" y="27" font-size="19">W</text>
+    <circle cx="16" cy="45" r="3" class="dotC"/>
+    <circle cx="28" cy="45" r="3" class="dotC"/>
+    <circle cx="40" cy="45" r="3" class="dotC"/>
+    <path class="orange" stroke-width="3.2" d="M14 55 H23 V36 H33 V55 H43 V40 H53"/>
+    <text class="label" x="32" y="95">D</text>
+  </g>
+
+  <!-- E: circular badge + waveform -->
+  <g transform="translate(466 34)">
+    <rect class="tile2" width="64" height="64" rx="15"/>
+    <circle cx="32" cy="32" r="23" fill="none" stroke="#38527a" stroke-width="2"/>
+    <text class="mono" x="13" y="30" font-size="18">J</text>
+    <text class="mono" x="29" y="30" font-size="18">W</text>
+    <path class="cyan" stroke-width="3.5" d="M12 45 C19 45 20 36 27 36 S35 51 42 42 S48 31 54 34"/>
+    <text class="label" x="32" y="95">E</text>
+  </g>
+
+  <!-- F: clean final candidate, bigger preview -->
+  <g transform="translate(214 142)">
+    <rect class="tile" width="64" height="64" rx="15"/>
+    <text class="mono" x="11" y="28" font-size="20">J</text>
+    <text class="mono" x="28" y="28" font-size="20">W</text>
+    <path class="cyan" stroke-width="3.8" d="M10 46 C18 46 18 36 26 36 S33 55 41 45 S47 31 55 31"/>
+    <path class="orange" stroke-width="2.6" d="M45 50 H55"/>
+    <circle cx="10" cy="46" r="2.6" class="dotC"/>
+    <circle cx="55" cy="31" r="2.6" class="dotO"/>
+    <text class="label" x="32" y="95">F</text>
+  </g>
+
+  <text x="280" y="224" font="14px system-ui, Segoe UI, sans-serif" fill="#9fb3cf" text-anchor="middle">
+    Variantes del concepto 1: monograma JW + señal serial/plot
+  </text>
+</svg>

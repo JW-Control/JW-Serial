@@ -35,6 +35,14 @@ const createPlot = (index) => ({
 });
 
 const defaultPlots = [createPlot(1), createPlot(2)];
+const defaultCaptureConfig = {
+  enabled: false,
+  intervalMinutes: 10,
+  directory: "",
+  label: "",
+  usePrefix: false,
+  useSubfolder: false
+};
 
 const commonBaudRates = [
   300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600,
@@ -188,6 +196,22 @@ const filterTicksByPixelGap = (ticks, toPx, minGap = 22) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+const findFiniteRange = (values) => {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+
+  values.forEach((value) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  });
+
+  return Number.isFinite(min) ? { min, max } : null;
+};
+
 const normalizeAxisRange = (minValue, maxValue) => {
   if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
     return { min: 0, max: 1 };
@@ -314,7 +338,29 @@ const buildSeries = (
   return buildPath(reducedPoints);
 };
 
+const basePlotTicks = {
+  x: { ticks: [0, 1, 2, 3, 4, 5], min: 0, max: 5, step: 1 },
+  y1: { ticks: [0, 0.25, 0.5, 0.75, 1], min: 0, max: 1, step: 0.25 },
+  y2: { ticks: [-1, -0.5, 0, 0.5, 1], min: -1, max: 1, step: 0.5 }
+};
+
+const templateStorageKey = "jwSerialTemplates";
+
+const readTemplateStore = () => {
+  try {
+    return JSON.parse(localStorage.getItem(templateStorageKey) || "{}");
+  } catch (_error) {
+    return {};
+  }
+};
+
+const getTemplateNames = (templates = readTemplateStore()) =>
+  Object.keys(templates).sort((left, right) =>
+    left.localeCompare(right, undefined, { sensitivity: "base" })
+  );
+
 export default function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem("jwSerialTheme") || "light");
   const [plots, setPlots] = useState(defaultPlots);
   const [plotDrafts, setPlotDrafts] = useState({});
   const [channels, setChannels] = useState(createDefaultChannels(10));
@@ -331,16 +377,40 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [configText, setConfigText] = useState("");
   const [configMessage, setConfigMessage] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [selectedTemplateName, setSelectedTemplateName] = useState("");
+  const [templateNames, setTemplateNames] = useState(() => getTemplateNames());
+  const [templateMessage, setTemplateMessage] = useState("");
+  const [eventText, setEventText] = useState("");
+  const [rxStats, setRxStats] = useState({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
   const [variableMenu, setVariableMenu] = useState(null);
   const [hoverAxisByPlot, setHoverAxisByPlot] = useState({});
   const [axisDrag, setAxisDrag] = useState(null);
+  const [plotWidths, setPlotWidths] = useState({});
+  const [assignmentPrompt, setAssignmentPrompt] = useState(null);
+  const [captureConfig, setCaptureConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem("jwSerialCaptureConfig");
+      return saved ? { ...defaultCaptureConfig, ...JSON.parse(saved) } : defaultCaptureConfig;
+    } catch (_error) {
+      return defaultCaptureConfig;
+    }
+  });
+  const [captureMessage, setCaptureMessage] = useState("");
+  const [nextCaptureAt, setNextCaptureAt] = useState(null);
+  const [captureTimerNow, setCaptureTimerNow] = useState(Date.now());
   const menuRef = useRef(null);
   const variableMenuRef = useRef(null);
   const plotsRef = useRef(null);
+  const plotElementRefs = useRef(new Map());
+  const plotRefCallbacks = useRef(new Map());
+  const plotResizeObservers = useRef(new Map());
+  const captureInProgressRef = useRef(false);
   const historyRef = useRef([]);
+  const rxTimesRef = useRef([]);
 
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
@@ -359,12 +429,35 @@ export default function App() {
     stopBits: 1
   });
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("jwSerialTheme", theme);
+  }, [theme]);
+
   const visibleChannels = useMemo(() => {
     if (basicConfig.channelCount <= 0) {
       return channels;
     }
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
+
+  const captureCountdown = useMemo(() => {
+    const intervalMs = Math.max(1, Number(captureConfig.intervalMinutes) || 10) * 60 * 1000;
+    const remainingMs = nextCaptureAt ? Math.max(0, nextCaptureAt - captureTimerNow) : intervalMs;
+    const progress = captureConfig.enabled && captureConfig.directory && nextCaptureAt
+      ? clamp(1 - remainingMs / intervalMs, 0, 1)
+      : 0;
+    let label = "Capturar plots";
+    if (captureConfig.enabled && captureConfig.directory && nextCaptureAt) {
+      const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      label = `Capturar plots - ${minutes}:${seconds.toString().padStart(2, "0")}`;
+    } else if (captureConfig.enabled && !captureConfig.directory) {
+      label = "Capturar plots - sin carpeta";
+    }
+    return { label, progress };
+  }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes, captureTimerNow, nextCaptureAt]);
 
     const statusTone = isPaused
     ? "paused"
@@ -386,11 +479,39 @@ export default function App() {
       lineStyle,
       thickness
     })),
-    plots
+    plots,
+    captureConfig
   });
 
   const appendLog = (message) => {
     setMonitorLog((prev) => [...prev.slice(-399), message]);
+  };
+
+  const sessionLoggingEnabled = () =>
+    Boolean(captureConfig.directory && captureConfig.label?.trim() && captureConfig.useSubfolder);
+
+  const appendSessionEvent = async (type, detail = "", extras = {}) => {
+    if (!sessionLoggingEnabled() || !window.jwSerial?.appendSessionEvent) {
+      return;
+    }
+
+    try {
+      await window.jwSerial.appendSessionEvent({
+        directory: captureConfig.directory,
+        label: captureConfig.label,
+        useSubfolder: captureConfig.useSubfolder,
+        type,
+        detail,
+        port: selectedPort || manualPort,
+        baudRate,
+        frames: rxStats.frames,
+        sps: rxStats.sps.toFixed(2),
+        lastFrameMs: rxStats.lastFrameMs ?? "",
+        ...extras
+      });
+    } catch (_error) {
+      // Session logging should never interrupt acquisition.
+    }
   };
 
   const getDraft = (plotId) =>
@@ -407,6 +528,26 @@ export default function App() {
         ...nextDraft
       }
     }));
+  };
+
+  const updateReceiveStats = (timestamp) => {
+    const now = Number(timestamp) || Date.now();
+    const windowMs = 5000;
+    const times = [...rxTimesRef.current, now].filter((time) => now - time <= windowMs);
+    rxTimesRef.current = times;
+    const intervals = times.slice(1).map((time, index) => time - times[index]);
+    const avgMs = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
+    const jitterMs = intervals.length
+      ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - avgMs) ** 2, 0) / intervals.length)
+      : 0;
+    const spanSeconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 1;
+    setRxStats({
+      frames: historyRef.current.length + 1,
+      sps: times.length > 1 ? (times.length - 1) / Math.max(0.001, spanSeconds) : 0,
+      avgMs,
+      jitterMs,
+      lastFrameMs: Date.now() - now
+    });
   };
 
   const closeContextMenu = () => {
@@ -427,6 +568,90 @@ export default function App() {
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, ...patch } : plot))
     );
+  };
+
+  const updateCaptureConfig = (patch) => {
+    setCaptureConfig((prev) => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem("jwSerialCaptureConfig", JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const getCaptureIntervalMs = (config = captureConfig) =>
+    Math.max(1, Number(config.intervalMinutes) || 10) * 60 * 1000;
+
+  const resetCaptureTimer = (from = Date.now(), config = captureConfig) => {
+    if (!config.enabled || !config.directory) {
+      setNextCaptureAt(null);
+      return;
+    }
+    setNextCaptureAt(from + getCaptureIntervalMs(config));
+  };
+
+  const formatRemainingTime = (ms) => {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  };
+
+  const assignChannelToAxis = (plotId, channelId, axis) => {
+    if (!plotId || !channelId || !axis) {
+      return;
+    }
+    const key = `${channelId}:${axis}`;
+    setPlots((prev) =>
+      prev.map((plot) => {
+        if (plot.id !== plotId) {
+          return plot;
+        }
+        if (plot.assignments.some((item) => `${item.channelId}:${item.axis}` === key)) {
+          return plot;
+        }
+        const withoutSameXAxis = axis === "x"
+          ? plot.assignments.filter((item) => item.axis !== "x")
+          : plot.assignments;
+        return {
+          ...plot,
+          assignments: [...withoutSameXAxis, { channelId, axis }]
+        };
+      })
+    );
+    setAssignmentPrompt(null);
+  };
+
+  const getPlotElementRef = (plotId) => {
+    if (plotRefCallbacks.current.has(plotId)) {
+      return plotRefCallbacks.current.get(plotId);
+    }
+
+    const callback = (node) => {
+      const previousObserver = plotResizeObservers.current.get(plotId);
+      if (previousObserver) {
+        previousObserver.disconnect();
+        plotResizeObservers.current.delete(plotId);
+      }
+
+      if (!node) {
+        plotElementRefs.current.delete(plotId);
+        return;
+      }
+
+      plotElementRefs.current.set(plotId, node);
+      const updateWidth = () => {
+        const rect = (node.querySelector(".plot__canvas") || node).getBoundingClientRect();
+        const width = Math.max(360, Math.round(rect.width));
+        setPlotWidths((prev) => (prev[plotId] === width ? prev : { ...prev, [plotId]: width }));
+      };
+      const observer = new ResizeObserver(updateWidth);
+      observer.observe(node);
+      plotResizeObservers.current.set(plotId, observer);
+      window.requestAnimationFrame(updateWidth);
+    };
+
+    plotRefCallbacks.current.set(plotId, callback);
+    return callback;
   };
 
 
@@ -529,7 +754,7 @@ export default function App() {
         return index;
       });
 
-      return { min: Math.min(...xValues), max: Math.max(...xValues) };
+      return findFiniteRange(xValues);
     }
 
     const axisAssignments = plot.assignments.filter((item) => item.axis === axis);
@@ -610,19 +835,37 @@ export default function App() {
 
     const rect = event.currentTarget.getBoundingClientRect();
     const pixelHeight = Math.max(1, rect.height * 0.76);
+    const pixelWidth = Math.max(1, rect.width * 0.86);
+    const deltaX = event.clientX - axisDrag.lastClientX;
     const deltaY = event.clientY - axisDrag.lastClientY;
-    if (Math.abs(deltaY) < 0.5) {
+    if (Math.abs(deltaY) < 0.5 && Math.abs(deltaX) < 0.5) {
       return;
     }
 
-    setAxisDrag((prev) => (prev ? { ...prev, lastClientY: event.clientY } : prev));
+    setAxisDrag((prev) => (prev ? { ...prev, lastClientX: event.clientX, lastClientY: event.clientY } : prev));
 
     setPlots((prev) =>
       prev.map((candidate) => {
-        if (candidate.id !== plotId || !["y1", "y2"].includes(axisDrag.axis) || candidate[`${axisDrag.axis}Mode`] !== "manual") {
+        if (candidate.id !== plotId) {
           return candidate;
         }
 
+        if (axisDrag.axis === "x") {
+          if (candidate.xMode !== "manual") {
+            return candidate;
+          }
+          const span = Math.max(1e-6, Number(candidate.xManualMax) - Number(candidate.xManualMin));
+          const valueShift = -(deltaX / pixelWidth) * span;
+          return {
+            ...candidate,
+            xManualMin: Number((Number(candidate.xManualMin) + valueShift).toFixed(6)),
+            xManualMax: Number((Number(candidate.xManualMax) + valueShift).toFixed(6))
+          };
+        }
+
+        if (!["y1", "y2"].includes(axisDrag.axis) || candidate[`${axisDrag.axis}Mode`] !== "manual") {
+          return candidate;
+        }
         const minKey = `${axisDrag.axis}ManualMin`;
         const maxKey = `${axisDrag.axis}ManualMax`;
         const span = Math.max(1e-6, Number(candidate[maxKey]) - Number(candidate[minKey]));
@@ -641,7 +884,7 @@ export default function App() {
       return;
     }
     const axis = getPointerAxisZone(event);
-    if (!axis || axis === "x") {
+    if (!axis) {
       return;
     }
 
@@ -651,7 +894,7 @@ export default function App() {
     }
 
     event.preventDefault();
-    setAxisDrag({ plotId, axis, lastClientY: event.clientY });
+    setAxisDrag({ plotId, axis, lastClientX: event.clientX, lastClientY: event.clientY });
   };
 
   const handlePlotCanvasPointerLeave = (plotId) => {
@@ -751,7 +994,9 @@ export default function App() {
   };
 
   const handlePlotterWheelCapture = (event) => {
-    event.preventDefault();
+    if (event.cancelable) {
+      event.preventDefault();
+    }
   };
 
   const openVariableMenu = (event, channelId) => {
@@ -762,6 +1007,51 @@ export default function App() {
     const y = clamp(event.clientY, 8, window.innerHeight - menuHeight - 8);
     setVariableMenu({ channelId, x, y });
     setContextMenu(null);
+  };
+
+  const handleChannelDragStart = (event, channelId) => {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", channelId);
+    event.dataTransfer.setData("application/x-jw-channel", channelId);
+  };
+
+  const handlePlotDragOver = (event) => {
+    if (event.dataTransfer.types.includes("application/x-jw-channel") || event.dataTransfer.types.includes("text/plain")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      const plotId = event.currentTarget.dataset.plotId;
+      const axis = getPointerAxisZone(event);
+      setHoverAxisByPlot((prev) => (prev[plotId] === axis ? prev : { ...prev, [plotId]: axis }));
+    }
+  };
+
+  const handlePlotDragLeave = (event, plotId) => {
+    if (event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+    setHoverAxisByPlot((prev) => ({ ...prev, [plotId]: null }));
+  };
+
+  const handlePlotDrop = (event, plotId) => {
+    const channelId = event.dataTransfer.getData("application/x-jw-channel") || event.dataTransfer.getData("text/plain");
+    if (!channelId) {
+      return;
+    }
+
+    event.preventDefault();
+    setHoverAxisByPlot((prev) => ({ ...prev, [plotId]: null }));
+    const axis = getPointerAxisZone(event);
+    if (axis) {
+      assignChannelToAxis(plotId, channelId, axis);
+      return;
+    }
+
+    const channel = channels.find((item) => item.id === channelId);
+    setAssignmentPrompt({
+      plotId,
+      channelId,
+      channelName: channel?.name || channelId
+    });
   };
 
 
@@ -811,22 +1101,7 @@ export default function App() {
     if (!channelId) {
       return;
     }
-    const key = `${channelId}:${draft.axis}`;
-
-    setPlots((prev) =>
-      prev.map((plot) => {
-        if (plot.id !== plotId) {
-          return plot;
-        }
-        if (plot.assignments.some((item) => `${item.channelId}:${item.axis}` === key)) {
-          return plot;
-        }
-        return {
-          ...plot,
-          assignments: [...plot.assignments, { channelId, axis: draft.axis }]
-        };
-      })
-    );
+    assignChannelToAxis(plotId, channelId, draft.axis);
   };
 
   const removeAssignment = (plotId) => {
@@ -946,18 +1221,22 @@ export default function App() {
         includeTimestamp: basicConfig.includeTimestamp
       });
       setConnectionStatus("connected");
+      appendSessionEvent("connect", `Conectado a ${targetPort}`);
     } catch (_error) {
       setConnectionStatus("error");
     }
   };
 
   const handleDisconnect = async () => {
+    appendSessionEvent("disconnect", "Desconexión solicitada");
     await window.jwSerial.closePort();
     setConnectionStatus("disconnected");
   };
 
   const clearBuffer = () => {
     historyRef.current = [];
+    rxTimesRef.current = [];
+    setRxStats({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
     setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
     setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
@@ -980,14 +1259,112 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleSaveConfig = () => {
+  const isMissingIpcHandlerError = (error) =>
+    String(error?.message || error || "").includes("No handler registered");
+
+  const getTemplateStore = () => readTemplateStore();
+
+  const syncTemplateNames = (templates = getTemplateStore(), preferredName = selectedTemplateName) => {
+    const names = getTemplateNames(templates);
+    setTemplateNames(names);
+    setSelectedTemplateName(names.includes(preferredName) ? preferredName : "");
+    return names;
+  };
+
+  const saveTemplate = () => {
+    const name = templateName.trim();
+    if (!name) {
+      setTemplateMessage("Escribe un nombre en Guardar como.");
+      return;
+    }
+    const templates = getTemplateStore();
+    templates[name] = buildConfigSnapshot();
+    localStorage.setItem(templateStorageKey, JSON.stringify(templates));
+    syncTemplateNames(templates, name);
+    setTemplateName("");
+    setTemplateMessage(`Plantilla guardada: ${name}`);
+  };
+
+  const loadTemplate = () => {
+    const name = selectedTemplateName.trim();
+    if (!name) {
+      setTemplateMessage("Selecciona una plantilla para cargar.");
+      return;
+    }
+    const template = getTemplateStore()[name];
+    if (!template) {
+      syncTemplateNames();
+      setTemplateMessage("No se encontró esa plantilla.");
+      return;
+    }
+    applyConfigSnapshot(template);
+    setTemplateMessage(`Plantilla cargada: ${name}`);
+  };
+
+  const deleteTemplate = () => {
+    const name = selectedTemplateName.trim();
+    if (!name) {
+      setTemplateMessage("Selecciona una plantilla para eliminar.");
+      return;
+    }
+    const templates = getTemplateStore();
+    if (!templates[name]) {
+      syncTemplateNames();
+      setTemplateMessage("No se encontró esa plantilla.");
+      return;
+    }
+    delete templates[name];
+    localStorage.setItem(templateStorageKey, JSON.stringify(templates));
+    syncTemplateNames(templates, "");
+    setTemplateMessage(`Plantilla eliminada: ${name}`);
+  };
+
+  const handleSaveConfig = async () => {
     const payload = JSON.stringify(buildConfigSnapshot(), null, 2);
     setConfigText(payload);
     localStorage.setItem("jwSerialConfig", payload);
+    try {
+      const response = await window.jwSerial?.saveConfigFile?.(payload);
+      if (response?.ok) {
+        setConfigMessage(`Configuracion guardada en ${response.filePath}`);
+        return;
+      }
+      if (response?.canceled) {
+        setConfigMessage("Guardado cancelado.");
+        return;
+      }
+    } catch (error) {
+      if (isMissingIpcHandlerError(error)) {
+        setConfigMessage("Reinicia JW-Serial para activar el dialogo nativo de guardado.");
+        return;
+      }
+      setConfigMessage("No se pudo abrir el dialogo de guardado.");
+      return;
+    }
     setConfigMessage("Configuración guardada localmente.");
   };
 
-  const handleLoadConfig = () => {
+  const handleLoadConfig = async () => {
+    try {
+      const response = await window.jwSerial?.loadConfigFile?.();
+      if (response?.ok) {
+        localStorage.setItem("jwSerialConfig", response.content);
+        setConfigText(response.content);
+        setConfigMessage(`Configuracion cargada desde ${response.filePath}`);
+        return;
+      }
+      if (response?.canceled) {
+        setConfigMessage("Carga cancelada.");
+        return;
+      }
+    } catch (error) {
+      if (isMissingIpcHandlerError(error)) {
+        setConfigMessage("Reinicia JW-Serial para activar el dialogo nativo de carga.");
+        return;
+      }
+      setConfigMessage("No se pudo abrir el dialogo de carga.");
+      return;
+    }
     const saved = localStorage.getItem("jwSerialConfig");
     if (!saved) {
       setConfigMessage("No hay configuración guardada.");
@@ -1017,6 +1394,9 @@ export default function App() {
       if (parsed.plots) {
         setPlots(parsed.plots);
       }
+      if (parsed.captureConfig) {
+        updateCaptureConfig(parsed.captureConfig);
+      }
       if (Array.isArray(parsed.channels)) {
         const preferredCount = nextBasicConfig.channelCount > 0
           ? nextBasicConfig.channelCount
@@ -1029,9 +1409,296 @@ export default function App() {
     }
   };
 
+  const applyConfigSnapshot = (parsed) => {
+    const nextBasicConfig = parsed.basicConfig ? { ...basicConfig, ...parsed.basicConfig } : basicConfig;
+    if (parsed.basicConfig) {
+      setBasicConfig(nextBasicConfig);
+    }
+    if (parsed.advancedConfig) {
+      setAdvancedConfig(parsed.advancedConfig);
+    }
+    if (parsed.baudRate) {
+      setBaudRate(parsed.baudRate);
+    }
+    if (parsed.selectedPort) {
+      setSelectedPort(parsed.selectedPort);
+    }
+    if (parsed.plots) {
+      setPlots(parsed.plots);
+    }
+    if (parsed.captureConfig) {
+      updateCaptureConfig(parsed.captureConfig);
+    }
+    if (Array.isArray(parsed.channels)) {
+      const preferredCount = nextBasicConfig.channelCount > 0
+        ? nextBasicConfig.channelCount
+        : parsed.channels.length;
+      setChannels(normalizeChannels(preferredCount, parsed.channels));
+    }
+  };
+
+  const chooseCaptureDirectory = async () => {
+    try {
+      const response = await window.jwSerial?.chooseCaptureDirectory?.();
+      if (!response?.ok) {
+        setCaptureMessage(response?.canceled ? "Seleccion cancelada." : "No se pudo elegir carpeta.");
+        return;
+      }
+      updateCaptureConfig({ directory: response.directory });
+      setCaptureMessage("Carpeta de capturas configurada.");
+    } catch (error) {
+      setCaptureMessage(
+        isMissingIpcHandlerError(error)
+          ? "Reinicia JW-Serial para activar el selector de carpeta."
+          : "No se pudo abrir el selector de carpeta."
+      );
+    }
+  };
+
+  const openCaptureDirectory = async () => {
+    if (!captureConfig.directory) {
+      setCaptureMessage("Elige una carpeta antes de abrirla.");
+      return;
+    }
+
+    try {
+      const response = await window.jwSerial?.openCaptureDirectory?.(captureConfig.directory);
+      if (!response?.ok) {
+        setCaptureMessage(response?.error || "No se pudo abrir la carpeta.");
+      }
+    } catch (error) {
+      setCaptureMessage(
+        isMissingIpcHandlerError(error)
+          ? "Reinicia JW-Serial para activar abrir carpeta."
+          : "No se pudo abrir la carpeta."
+      );
+    }
+  };
+
+  const waitForPaint = () =>
+    new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+
+  const inlineComputedStyles = (source, clone) => {
+    if (!(source instanceof Element) || !(clone instanceof Element)) {
+      return;
+    }
+
+    const computed = window.getComputedStyle(source);
+    for (const property of computed) {
+      clone.style.setProperty(property, computed.getPropertyValue(property), computed.getPropertyPriority(property));
+    }
+
+    if (source instanceof HTMLInputElement && clone instanceof HTMLInputElement) {
+      clone.value = source.value;
+      if (source.checked) {
+        clone.setAttribute("checked", "");
+      } else {
+        clone.removeAttribute("checked");
+      }
+    }
+
+    Array.from(source.children).forEach((child, index) => {
+      inlineComputedStyles(child, clone.children[index]);
+    });
+  };
+
+  const renderElementToPng = async (element) => {
+    const rect = element.getBoundingClientRect();
+    const width = Math.max(1, Math.ceil(rect.width || element.offsetWidth));
+    const height = Math.max(1, Math.ceil(rect.height || element.offsetHeight));
+    const clone = element.cloneNode(true);
+
+    inlineComputedStyles(element, clone);
+    clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+    clone.style.width = `${width}px`;
+    clone.style.height = `${height}px`;
+    clone.style.margin = "0";
+
+    const serialized = new XMLSerializer().serializeToString(clone);
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+        <foreignObject width="100%" height="100%">
+          ${serialized}
+        </foreignObject>
+      </svg>
+    `;
+
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = url;
+      });
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      const context = canvas.getContext("2d");
+      context.scale(scale, scale);
+      context.drawImage(image, 0, 0, width, height);
+      return canvas.toDataURL("image/png");
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const captureSinglePlot = async (plot, plotIndex) => {
+    const element = plotElementRefs.current.get(plot.id);
+    if (!element || !captureConfig.directory) {
+      return null;
+    }
+
+    await waitForPaint();
+    const saveVisibleWindowFallback = async () => {
+      if (!window.jwSerial?.capturePlot) {
+        return null;
+      }
+
+      const rect = element.getBoundingClientRect();
+      return window.jwSerial.capturePlot({
+        title: plot.title,
+        plotNumber: plotIndex + 1,
+        directory: captureConfig.directory,
+        label: captureConfig.label,
+        usePrefix: captureConfig.usePrefix,
+        useSubfolder: captureConfig.useSubfolder,
+        rect: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        }
+      });
+    };
+
+    try {
+      if (!window.jwSerial?.savePlotImage) {
+        const fallback = await saveVisibleWindowFallback();
+        if (fallback?.ok) {
+          return fallback;
+        }
+        return {
+          ok: false,
+          error: "Reinicia JW-Serial para activar las capturas PNG en segundo plano."
+        };
+      }
+
+      const dataUrl = await renderElementToPng(element);
+      return await window.jwSerial?.savePlotImage?.({
+        title: plot.title,
+        plotNumber: plotIndex + 1,
+        directory: captureConfig.directory,
+        label: captureConfig.label,
+        usePrefix: captureConfig.usePrefix,
+        useSubfolder: captureConfig.useSubfolder,
+        dataUrl
+      });
+    } catch (error) {
+      try {
+        const fallback = await saveVisibleWindowFallback();
+        if (fallback?.ok) {
+          return fallback;
+        }
+      } catch (_fallbackError) {
+        // Keep the original error message below.
+      }
+
+      return {
+        ok: false,
+        error: isMissingIpcHandlerError(error)
+          ? "Reinicia JW-Serial para activar las capturas PNG en segundo plano."
+          : `No se pudo guardar la captura: ${String(error?.message || error)}`
+      };
+    }
+  };
+
+  const captureAllPlots = async ({ resetTimer = true, automatic = false } = {}) => {
+    if (captureInProgressRef.current) {
+      return;
+    }
+    if (!captureConfig.directory) {
+      setCaptureMessage("Elige una carpeta antes de capturar.");
+      return;
+    }
+
+    captureInProgressRef.current = true;
+    const plotsElement = plotsRef.current;
+    const previousPlotsScrollTop = plotsElement?.scrollTop ?? 0;
+    const previousWindowScrollX = window.scrollX;
+    const previousWindowScrollY = window.scrollY;
+    const captureRoot = document.documentElement;
+
+    const results = [];
+    try {
+      captureRoot.classList.add("capture-clean");
+      await waitForPaint();
+      for (const [plotIndex, plot] of plots.entries()) {
+        results.push(await captureSinglePlot(plot, plotIndex));
+      }
+    } finally {
+      captureRoot.classList.remove("capture-clean");
+      captureInProgressRef.current = false;
+      if (plotsElement) {
+        plotsElement.scrollTop = previousPlotsScrollTop;
+      }
+      window.scrollTo(previousWindowScrollX, previousWindowScrollY);
+      if (resetTimer) {
+        resetCaptureTimer();
+      }
+    }
+    const saved = results.filter((result) => result?.ok).length;
+    const firstError = results.find((result) => result && !result.ok)?.error;
+    setCaptureMessage(
+      saved > 0
+        ? `${automatic ? "Auto: " : ""}${saved} captura(s) guardada(s)`
+        : firstError || "No se pudieron guardar capturas."
+    );
+    if (saved > 0) {
+      appendSessionEvent(automatic ? "auto_capture" : "manual_capture", `${saved} captura(s) guardada(s)`, { captures: saved });
+    }
+  };
+
   useEffect(() => {
     refreshPorts();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      plotResizeObservers.current.forEach((observer) => observer.disconnect());
+      plotResizeObservers.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("jwSerialCaptureConfig", JSON.stringify(captureConfig));
+  }, [captureConfig]);
+
+  useEffect(() => {
+    resetCaptureTimer();
+  }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes]);
+
+  useEffect(() => {
+    if (!nextCaptureAt) {
+      return undefined;
+    }
+
+    const ticker = window.setInterval(() => setCaptureTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(ticker);
+  }, [nextCaptureAt]);
+
+  useEffect(() => {
+    if (!captureConfig.enabled || !captureConfig.directory || !nextCaptureAt) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => {
+      captureAllPlots({ automatic: true });
+    }, Math.max(0, nextCaptureAt - Date.now()));
+    return () => window.clearTimeout(timeout);
+  }, [captureConfig.enabled, captureConfig.directory, nextCaptureAt, plots]);
 
   useEffect(() => {
     if (
@@ -1070,6 +1737,7 @@ export default function App() {
         xValue,
         values: incomingValues.slice(0, channelCount)
       });
+      updateReceiveStats(frame.timestamp);
       if (historyRef.current.length > maxSamples) {
         historyRef.current = historyRef.current.slice(-maxSamples);
       }
@@ -1183,14 +1851,10 @@ export default function App() {
     const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
     const samples = plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
     const layoutHeight = clamp(plot.height || 320, 300, 720);
-    const width = 1200;
+    const width = Math.max(520, plotWidths[plot.id] || 1200);
     const height = Math.max(180, layoutHeight - 88);
-    const padding = { top: 14, right: 60, bottom: 34, left: 60 };
+    const padding = { top: 20, right: 74, bottom: 40, left: 74 };
     const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
-
-    if (samples.length < 2 || plot.assignments.length === 0) {
-      return <span>Esperando datos y canales asignados...</span>;
-    }
 
     const xAssignment = plot.assignments.find((item) => item.axis === "x");
     const xValues = samples.map((sample, index) => {
@@ -1204,9 +1868,7 @@ export default function App() {
     });
 
     const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
-    if (yAssignments.length === 0) {
-      return <span>Asigna al menos un canal al eje Y.</span>;
-    }
+    const hasRenderableData = samples.length >= 2 && plot.assignments.length > 0 && yAssignments.length > 0;
 
     const axisStats = {
       y1: { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY },
@@ -1225,10 +1887,12 @@ export default function App() {
       });
     });
 
-    const y1AutoRange = normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max);
+    const y1AutoRange = Number.isFinite(axisStats.y1.min)
+      ? normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max)
+      : { min: basePlotTicks.y1.min, max: basePlotTicks.y1.max };
     const y2AutoRange = Number.isFinite(axisStats.y2.min)
       ? normalizeYAxisRange(axisStats.y2.min, axisStats.y2.max)
-      : y1AutoRange;
+      : { min: basePlotTicks.y2.min, max: basePlotTicks.y2.max };
 
     const y1Range = plot.y1Mode === "manual"
       ? {
@@ -1244,15 +1908,21 @@ export default function App() {
         }
       : y2AutoRange;
 
-    const y1TicksData = makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom);
-    const y2TicksData = makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom);
+    const y1TicksData = hasRenderableData
+      ? makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom)
+      : basePlotTicks.y1;
+    const y2TicksData = hasRenderableData
+      ? makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom)
+      : basePlotTicks.y2;
 
-    const xMin = Math.min(...xValues);
-    const xMax = Math.max(...xValues);
-    const rightPad = (xMax - xMin || 1) * 0.05;
-    const xTicksData = plot.xMode === "manual"
+    const xRange = findFiniteRange(xValues);
+    const xMin = xRange?.min ?? basePlotTicks.x.min;
+    const xMax = xRange?.max ?? basePlotTicks.x.max;
+    const xTicksData = hasRenderableData && plot.xMode === "manual"
       ? makeXTicks(Number(plot.xManualMin ?? xMin), Number(plot.xManualMax ?? xMax), xTargetTicks)
-      : makeXTicks(xMin, xMax + rightPad, xTargetTicks);
+      : hasRenderableData
+        ? makeXTicks(xMin, xMax, xTargetTicks)
+        : basePlotTicks.x;
 
     const xMinorTicks = makeMinorTicks(xTicksData, getStepDivisionBase(xTicksData.step));
     const y1MinorTicks = makeMinorTicks(y1TicksData, getStepDivisionBase(y1TicksData.step));
@@ -1294,8 +1964,8 @@ export default function App() {
       max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
     };
 
-    const lines = yAssignments
-      .map((assignment) => {
+    const lines = hasRenderableData
+      ? yAssignments.map((assignment) => {
         const idx = channelIndex(assignment.channelId);
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
@@ -1332,8 +2002,8 @@ export default function App() {
             opacity="0.95"
           />
         );
-      })
-      .filter(Boolean);
+      }).filter(Boolean)
+      : [];
 
     const computeRollingStatSeries = (values, mode) => {
       if (mode === "avg") {
@@ -1383,8 +2053,8 @@ export default function App() {
       });
     };
 
-    const statCurves = yAssignments
-      .map((assignment) => {
+    const statCurves = hasRenderableData
+      ? yAssignments.map((assignment) => {
         const assignmentKey = `${assignment.channelId}:${assignment.axis}`;
         const idx = channelIndex(assignment.channelId);
         const channel = channels[idx];
@@ -1435,34 +2105,64 @@ export default function App() {
         buildStatPath("max", 0.65);
 
         return curves;
-      })
-      .flat();
+      }).flat()
+      : [];
 
-    const isAxisActive = (axis) => hoverAxisByPlot[plot.id] === axis && isAxisEditable(plot, axis);
+    const isAxisActive = (axis) => hoverAxisByPlot[plot.id] === axis;
     const xAutoEnabled = plot.xMode !== "manual";
     const y1AutoEnabled = plot.y1Mode === "auto";
     const y2AutoEnabled = plot.y2Mode === "auto";
     const plotClipId = `plot-clip-${plot.id}`;
+    const plotAreaWidth = width - padding.left - padding.right;
+    const plotAreaHeight = height - padding.top - padding.bottom;
+    const yDropWidth = 46;
+    const plotTheme = theme === "dark"
+      ? {
+          background: "#0f172a",
+          axis: "#64748b",
+          gridMinor: "#1e293b",
+          gridMinorY: "#182235",
+          gridMajor: "#475569",
+          gridYMajor: "#334155",
+          tick: "#cbd5e1",
+          placeholder: "#94a3b8",
+          checkFill: "#111827",
+          checkStroke: "#94a3b8",
+          check: "#60a5fa"
+        }
+      : {
+          background: "#ffffff",
+          axis: "#94a3b8",
+          gridMinor: "#e9eef8",
+          gridMinorY: "#f3f6fd",
+          gridMajor: "#b6c6db",
+          gridYMajor: "#bfdbfe",
+          tick: "#64748b",
+          placeholder: "#94a3b8",
+          checkFill: "#ffffff",
+          checkStroke: "#64748b",
+          check: "#2563eb"
+        };
 
     return (
-      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMinYMin meet">
         <defs>
           <clipPath id={plotClipId}>
             <rect
               x={padding.left}
               y={padding.top}
-              width={width - padding.left - padding.right}
-              height={height - padding.top - padding.bottom}
+              width={plotAreaWidth}
+              height={plotAreaHeight}
             />
           </clipPath>
         </defs>
-        <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
+        <rect x="0" y="0" width={width} height={height} fill={plotTheme.background} />
         <line
           x1={padding.left}
           y1={height - padding.bottom}
           x2={width - padding.right}
           y2={height - padding.bottom}
-          stroke="#94a3b8"
+          stroke={plotTheme.axis}
           strokeWidth="1"
         />
         <line
@@ -1470,7 +2170,7 @@ export default function App() {
           y1={padding.top}
           x2={padding.left}
           y2={height - padding.bottom}
-          stroke="#94a3b8"
+          stroke={plotTheme.axis}
           strokeWidth="1"
         />
         <line
@@ -1478,46 +2178,46 @@ export default function App() {
           y1={padding.top}
           x2={width - padding.right}
           y2={height - padding.bottom}
-          stroke="#94a3b8"
+          stroke={plotTheme.axis}
           strokeWidth="1"
         />
 
         <rect
-          x={padding.left - 44}
-          y={padding.top + 6}
-          width={34}
-          height={height - padding.top - padding.bottom - 12}
+          x={padding.left - yDropWidth - 8}
+          y={padding.top}
+          width={yDropWidth}
+          height={plotAreaHeight}
           className={`axis-control-box ${isAxisEditable(plot, "y1") ? "axis-control-box--editable" : ""} ${isAxisActive("y1") ? "axis-control-box--active" : ""}`}
           
         />
         <rect
-          x={width - padding.right + 10}
-          y={padding.top + 6}
-          width={34}
-          height={height - padding.top - padding.bottom - 12}
+          x={width - padding.right + 8}
+          y={padding.top}
+          width={yDropWidth}
+          height={plotAreaHeight}
           className={`axis-control-box ${isAxisEditable(plot, "y2") ? "axis-control-box--editable" : ""} ${isAxisActive("y2") ? "axis-control-box--active" : ""}`}
           
         />
         <rect
-          x={padding.left + 4}
-          y={height - 18}
-          width={width - padding.left - padding.right - 8}
-          height={16}
+          x={padding.left}
+          y={height - padding.bottom + 10}
+          width={plotAreaWidth}
+          height={20}
           className={`axis-control-box ${isAxisEditable(plot, "x") ? "axis-control-box--editable" : ""} ${isAxisActive("x") ? "axis-control-box--active" : ""}`}
           
         />
 
         <g onClick={() => handleModeChange(plot.id, "y1", y1AutoEnabled ? "manual" : "auto")}>
-          <rect x={padding.left - 40} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
-          {y1AutoEnabled ? <path d={`M ${padding.left - 38} ${padding.top - 7} L ${padding.left - 36} ${padding.top - 5} L ${padding.left - 32} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+          <rect x={padding.left - yDropWidth - 2} y={padding.top - 16} width={10} height={10} fill={plotTheme.checkFill} stroke={plotTheme.checkStroke} strokeWidth="1" />
+          {y1AutoEnabled ? <path d={`M ${padding.left - yDropWidth} ${padding.top - 11} L ${padding.left - yDropWidth + 2} ${padding.top - 9} L ${padding.left - yDropWidth + 6} ${padding.top - 14}`} stroke={plotTheme.check} strokeWidth="1.5" fill="none" /> : null}
         </g>
         <g onClick={() => handleModeChange(plot.id, "y2", y2AutoEnabled ? "manual" : "auto")}>
-          <rect x={width - padding.right + 14} y={padding.top - 12} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
-          {y2AutoEnabled ? <path d={`M ${width - padding.right + 16} ${padding.top - 7} L ${width - padding.right + 18} ${padding.top - 5} L ${width - padding.right + 22} ${padding.top - 10}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+          <rect x={width - padding.right + 14} y={padding.top - 16} width={10} height={10} fill={plotTheme.checkFill} stroke={plotTheme.checkStroke} strokeWidth="1" />
+          {y2AutoEnabled ? <path d={`M ${width - padding.right + 16} ${padding.top - 11} L ${width - padding.right + 18} ${padding.top - 9} L ${width - padding.right + 22} ${padding.top - 14}`} stroke={plotTheme.check} strokeWidth="1.5" fill="none" /> : null}
         </g>
         <g onClick={() => toggleXAxisAuto(plot.id, !xAutoEnabled)}>
-          <rect x={padding.left + 10} y={height - 16} width={10} height={10} fill="#fff" stroke="#64748b" strokeWidth="1" />
-          {xAutoEnabled ? <path d={`M ${padding.left + 12} ${height - 11} L ${padding.left + 14} ${height - 9} L ${padding.left + 18} ${height - 14}`} stroke="#2563eb" strokeWidth="1.5" fill="none" /> : null}
+          <rect x={padding.left - 18} y={height - padding.bottom + 15} width={10} height={10} fill={plotTheme.checkFill} stroke={plotTheme.checkStroke} strokeWidth="1" />
+          {xAutoEnabled ? <path d={`M ${padding.left - 16} ${height - padding.bottom + 20} L ${padding.left - 14} ${height - padding.bottom + 22} L ${padding.left - 10} ${height - padding.bottom + 17}`} stroke={plotTheme.check} strokeWidth="1.5" fill="none" /> : null}
         </g>
 
         {xMinorTicks.map((tick) => {
@@ -1529,7 +2229,7 @@ export default function App() {
               y1={padding.top}
               x2={x}
               y2={height - padding.bottom}
-              stroke="#e9eef8"
+              stroke={plotTheme.gridMinor}
               strokeWidth="1"
             />
           );
@@ -1544,7 +2244,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#f3f6fd"
+              stroke={plotTheme.gridMinorY}
               strokeWidth="1"
             />
           );
@@ -1559,7 +2259,7 @@ export default function App() {
               y1={y}
               x2={width - padding.right}
               y2={y}
-              stroke="#f3f6fd"
+              stroke={plotTheme.gridMinorY}
               strokeWidth="1"
             />
           );
@@ -1574,15 +2274,15 @@ export default function App() {
                 y1={padding.top}
                 x2={x}
                 y2={height - padding.bottom}
-                stroke="#b6c6db"
+                stroke={plotTheme.gridMajor}
                 strokeWidth="1.15"
               />
               <text
                 x={x}
-                y={height - 6}
+                y={height - padding.bottom + 24}
                 textAnchor="middle"
                 fontSize="12px"
-                fill="#64748b"
+                fill={plotTheme.tick}
               >
                 {formatTick(tick, xTicksData.step)}
               </text>
@@ -1599,15 +2299,15 @@ export default function App() {
                 y1={y}
                 x2={width - padding.right}
                 y2={y}
-                stroke="#bfdbfe"
+                stroke={plotTheme.gridYMajor}
                 strokeWidth="1.15"
               />
               <text
-                x={padding.left - 8}
+                x={padding.left - 14}
                 y={y + 3}
                 textAnchor="end"
                 fontSize="12px"
-                fill="#64748b"
+                fill={plotTheme.tick}
               >
                 {formatTick(tick, y1TicksData.step)}
               </text>
@@ -1620,11 +2320,11 @@ export default function App() {
           return (
             <text
               key={`y2-${tick}`}
-              x={width - 8}
+              x={width - padding.right + 14}
               y={y + 3}
-              textAnchor="end"
+              textAnchor="start"
               fontSize="12px"
-              fill="#64748b"
+              fill={plotTheme.tick}
             >
               {formatTick(tick, y2TicksData.step)}
             </text>
@@ -1634,6 +2334,17 @@ export default function App() {
           {lines}
           {statCurves}
         </g>
+        {!hasRenderableData ? (
+          <text
+            x={padding.left + plotAreaWidth / 2}
+            y={padding.top + plotAreaHeight / 2}
+            textAnchor="middle"
+            fontSize="12px"
+            fill={plotTheme.placeholder}
+          >
+            Arrastra una variable hacia X, Y1 o Y2
+          </text>
+        ) : null}
       </svg>
     );
   };
@@ -1642,7 +2353,9 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <header className="sidebar__header">
-          <h1>JW-Serial</h1>
+          <div className="sidebar__brand">
+            <div>
+              <h1>JW-Serial</h1>
           <div className="sidebar__status">
             <span className={`status-dot status-dot--${statusTone}`} />
             <span>
@@ -1656,6 +2369,25 @@ export default function App() {
             </span>
           </div>
           <p>MVP · Windows</p>
+            </div>
+            <button
+              type="button"
+              className={`theme-toggle theme-toggle--${theme}`}
+              onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+              aria-label={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+              title={theme === "dark" ? "Modo claro" : "Modo oscuro"}
+            >
+              <span className="theme-toggle__scene" aria-hidden="true">
+                <span className="theme-toggle__sun" />
+                <span className="theme-toggle__moon" />
+                <span className="theme-toggle__cloud theme-toggle__cloud--one" />
+                <span className="theme-toggle__cloud theme-toggle__cloud--two" />
+                <span className="theme-toggle__star theme-toggle__star--one" />
+                <span className="theme-toggle__star theme-toggle__star--two" />
+                <span className="theme-toggle__star theme-toggle__star--three" />
+              </span>
+            </button>
+          </div>
         </header>
 
         <div className="sidebar__content">
@@ -1716,14 +2448,24 @@ export default function App() {
                 </button>
               )}
             </div>
-            <p className="connection-status">Estado: {connectionStatus}</p>
+            <div className="rx-stats">
+              <span>{rxStats.sps.toFixed(1)} SPS</span>
+              <span>{rxStats.avgMs ? `${rxStats.avgMs.toFixed(1)} ms` : "-- ms"}</span>
+              <span>J {rxStats.jitterMs.toFixed(1)} ms</span>
+            </div>
           </section>
 
           <section className="sidebar__section">
             <h2>Variables</h2>
             <div className="channel-table">
               {visibleChannels.map((channel) => (
-                <div className="channel-row" key={channel.id} onContextMenu={(event) => openVariableMenu(event, channel.id)}>
+                <div
+                  className="channel-row"
+                  key={channel.id}
+                  draggable
+                  onDragStart={(event) => handleChannelDragStart(event, channel.id)}
+                  onContextMenu={(event) => openVariableMenu(event, channel.id)}
+                >
                   <span
                     className="channel-color"
                     style={{ backgroundColor: channel.color }}
@@ -1738,28 +2480,52 @@ export default function App() {
           <section className="sidebar__section">
             <h2>Acciones</h2>
             <div className="actions">
-              <button type="button" onClick={() => setModal("basic")}>
-                Configuración básica
+              <button type="button" onClick={() => setModal("config")}>
+                Configuración
               </button>
-              <button type="button" onClick={() => setModal("advanced")}>
-                Configuración avanzada
-              </button>
-              <button type="button" onClick={() => setIsPaused((prev) => !prev)}>
-                {isPaused ? "Reanudar" : "Pausar"}
-              </button>
+              <div className="actions__row actions__row--triple">
+                <button type="button" onClick={() => setIsPaused((prev) => !prev)}>
+                  {isPaused ? "Reanudar" : "Pausar"}
+                </button>
               <button type="button" onClick={clearBuffer}>
-                Limpiar buffer
+                Limpiar
               </button>
               <button type="button" onClick={exportCsv}>
-                Exportar CSV
+                  CSV
+                </button>
+              </div>
+              <button type="button" onClick={() => setModal("event")}>
+                Evento
               </button>
-              <button type="button" onClick={() => setModal("save")}>
-                Guardar configuración
+              <div className="actions__row actions__row--capture">
+              <button
+                type="button"
+                className="capture-status-button"
+                style={{ "--capture-progress": `${captureCountdown.progress * 100}%` }}
+                onClick={() => captureAllPlots()}
+              >
+                <span>{captureCountdown.label}</span>
               </button>
-              <button type="button" onClick={() => setModal("load")}>
-                Cargar configuración
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setModal("captures")}
+                aria-label="Configurar capturas"
+                title="Configurar capturas"
+              >
+                ⚙
               </button>
+              </div>
+              <div className="actions__row actions__row--split">
+                <button type="button" onClick={() => setModal("save")}>
+                  Guardar conf.
+                </button>
+                <button type="button" onClick={() => setModal("load")}>
+                  Cargar conf.
+                </button>
+              </div>
             </div>
+            {captureMessage ? <p className="connection-status">{captureMessage}</p> : null}
           </section>
         </div>
       </aside>
@@ -1812,7 +2578,12 @@ export default function App() {
               });
 
               return (
-                <section className="plot" key={plot.id} style={{ height: `${plot.height || 320}px` }}>
+                <section
+                  className="plot"
+                  key={plot.id}
+                  ref={getPlotElementRef(plot.id)}
+                  style={{ height: `${plot.height || 320}px` }}
+                >
                   <header className="plot__header">
                     <h3>{plot.title}</h3>
                   </header>
@@ -1824,6 +2595,10 @@ export default function App() {
                     onPointerMove={(event) => handlePlotCanvasPointerMove(event, plot.id)}
                     onPointerDown={(event) => handlePlotCanvasPointerDown(event, plot.id)}
                     onPointerLeave={() => handlePlotCanvasPointerLeave(plot.id)}
+                    onDragOver={handlePlotDragOver}
+                    onDragLeave={(event) => handlePlotDragLeave(event, plot.id)}
+                    onDrop={(event) => handlePlotDrop(event, plot.id)}
+                    data-plot-id={plot.id}
                   >
                     {renderPlot(plot)}
                     <div className="plot__legend-box">
@@ -2052,8 +2827,9 @@ export default function App() {
           <div className="modal">
             <header className="modal__header">
               <h3>
-                {modal === "basic" && "Configuración básica"}
-                {modal === "advanced" && "Configuración avanzada"}
+                {modal === "config" && "Configuración"}
+                {modal === "captures" && "Capturas"}
+                {modal === "event" && "Evento"}
                 {modal === "save" && "Guardar configuración"}
                 {modal === "load" && "Cargar configuración"}
               </h3>
@@ -2062,8 +2838,45 @@ export default function App() {
               </button>
             </header>
             <div className="modal__body">
-              {modal === "basic" ? (
-                <div className="modal__form">
+              {modal === "config" ? (
+                <div className="modal__form modal__section">
+                  <h4>Plantillas</h4>
+                  <label>
+                    Plantilla existente
+                    <select
+                      value={selectedTemplateName}
+                      onChange={(event) => {
+                        setSelectedTemplateName(event.target.value);
+                        setTemplateMessage("");
+                      }}
+                    >
+                      <option value="">Sin seleccionar</option>
+                      {templateNames.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Guardar como
+                    <input
+                      type="text"
+                      value={templateName}
+                      placeholder="Galga 80 SPS"
+                      onChange={(event) => setTemplateName(event.target.value)}
+                    />
+                  </label>
+                  <div className="modal__actions">
+                    <button type="button" onClick={saveTemplate}>Guardar como</button>
+                    <button type="button" onClick={loadTemplate} disabled={!selectedTemplateName}>Cargar</button>
+                    <button type="button" onClick={deleteTemplate} disabled={!selectedTemplateName}>Eliminar</button>
+                  </div>
+                  {templateMessage ? <p className="modal__hint">{templateMessage}</p> : null}
+                </div>
+              ) : null}
+
+              {modal === "config" ? (
+                <div className="modal__form modal__section">
+                  <h4>Básica</h4>
                   <label>
                     Canales por trama (0 = auto)
                     <input
@@ -2150,8 +2963,10 @@ export default function App() {
                 </div>
               ) : null}
 
-              {modal === "advanced" ? (
-                <div className="modal__form">
+              {modal === "config" ? (
+                <div className="modal__form modal__section">
+                  <h4>Avanzada</h4>
+                  <p className="modal__hint">Parámetros del puerto serial para equipos que requieren formato específico.</p>
                   <label>
                     Data bits
                     <select
@@ -2192,6 +3007,120 @@ export default function App() {
                 </div>
               ) : null}
 
+              {modal === "captures" ? (
+                <div className="modal__form modal__form--compact">
+                  <div className="modal__field">
+                    <span>Capturas automáticas</span>
+                    <button
+                      type="button"
+                      className={`state-toggle ${captureConfig.enabled ? "state-toggle--enabled" : "state-toggle--disabled"}`}
+                      onClick={() => updateCaptureConfig({ enabled: !captureConfig.enabled })}
+                    >
+                      {captureConfig.enabled ? "Activado" : "Desactivado"}
+                    </button>
+                  </div>
+                  <label>
+                    Intervalo de capturas (min)
+                    <input
+                      type="number"
+                      min="1"
+                      value={captureConfig.intervalMinutes}
+                      onChange={(event) =>
+                        updateCaptureConfig({ intervalMinutes: Math.max(1, Number(event.target.value) || 10) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Identificador de tarjeta/lote
+                    <input
+                      type="text"
+                      value={captureConfig.label}
+                      placeholder="PCB_10115"
+                      onChange={(event) => updateCaptureConfig({ label: event.target.value })}
+                    />
+                  </label>
+                  <div className="modal__field">
+                    <span>Usar como prefijo</span>
+                    <button
+                      type="button"
+                      className={`state-toggle ${captureConfig.usePrefix ? "state-toggle--enabled" : "state-toggle--disabled"}`}
+                      onClick={() => updateCaptureConfig({ usePrefix: !captureConfig.usePrefix })}
+                    >
+                      {captureConfig.usePrefix ? "Activado" : "Desactivado"}
+                    </button>
+                  </div>
+                  <div className="modal__field">
+                    <span>Guardar en subcarpeta</span>
+                    <button
+                      type="button"
+                      className={`state-toggle ${captureConfig.useSubfolder ? "state-toggle--enabled" : "state-toggle--disabled"}`}
+                      onClick={() => updateCaptureConfig({ useSubfolder: !captureConfig.useSubfolder })}
+                    >
+                      {captureConfig.useSubfolder ? "Activado" : "Desactivado"}
+                    </button>
+                  </div>
+                  <div className="modal__actions modal__actions--spaced">
+                    <button type="button" onClick={chooseCaptureDirectory}>
+                      Elegir carpeta
+                    </button>
+                    <button type="button" onClick={openCaptureDirectory}>
+                      Abrir carpeta
+                    </button>
+                    <button type="button" onClick={() => captureAllPlots()}>
+                      Capturar ahora
+                    </button>
+                  </div>
+                  <p className="modal__hint">
+                    {captureConfig.directory ? "Carpeta de capturas configurada." : "Sin carpeta de capturas seleccionada."}
+                  </p>
+                  {captureMessage ? <p className="modal__hint">{captureMessage}</p> : null}
+                </div>
+              ) : null}
+
+              {modal === "event" ? (
+                <div className="modal__form">
+                  <label>
+                    Descripción
+                    <input
+                      type="text"
+                      value={eventText}
+                      placeholder="Cambio de carga, ajuste, observación..."
+                      onChange={(event) => setEventText(event.target.value)}
+                    />
+                  </label>
+                  <div className="modal__actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const text = eventText.trim() || "Evento sin descripción";
+                        appendSessionEvent("event", text);
+                        appendLog(`EVT > ${text}`);
+                        setEventText("");
+                        closeModal();
+                      }}
+                    >
+                      Guardar evento
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const text = eventText.trim() || "Evento con captura";
+                        appendSessionEvent("event", text);
+                        appendLog(`EVT > ${text}`);
+                        captureAllPlots();
+                        setEventText("");
+                        closeModal();
+                      }}
+                    >
+                      Guardar y capturar
+                    </button>
+                  </div>
+                  <p className="modal__hint">
+                    Los eventos se registran solo si hay identificador y subcarpeta activos.
+                  </p>
+                </div>
+              ) : null}
+
               {modal === "save" || modal === "load" ? (
                 <div className="modal__form">
                   <label>
@@ -2205,11 +3134,11 @@ export default function App() {
                   <div className="modal__actions">
                     {modal === "save" ? (
                       <button type="button" onClick={handleSaveConfig}>
-                        Guardar local
+                        Guardar archivo JSON
                       </button>
                     ) : (
                       <button type="button" onClick={handleLoadConfig}>
-                        Cargar local
+                        Cargar archivo JSON
                       </button>
                     )}
                     <button type="button" onClick={applyConfigText}>
@@ -2219,6 +3148,37 @@ export default function App() {
                   {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {assignmentPrompt ? (
+        <div className="modal-backdrop">
+          <div className="modal modal--compact">
+            <header className="modal__header">
+              <h3>Asignar variable</h3>
+              <button type="button" onClick={() => setAssignmentPrompt(null)}>
+                Cerrar
+              </button>
+            </header>
+            <div className="modal__body">
+              <div className="modal__form">
+                <p className="modal__hint">
+                  {assignmentPrompt.channelName} se soltó dentro del plot. Elige el eje.
+                </p>
+                <div className="modal__actions">
+                  {["x", "y1", "y2"].map((axis) => (
+                    <button
+                      key={axis}
+                      type="button"
+                      onClick={() => assignChannelToAxis(assignmentPrompt.plotId, assignmentPrompt.channelId, axis)}
+                    >
+                      {axis.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>

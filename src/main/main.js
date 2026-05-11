@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,6 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const devUrl = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
+const appIconPath = path.join(__dirname, "../../build/icon.ico");
 
 let mainWindow = null;
 let activePort = null;
@@ -22,6 +24,7 @@ let portConfig = {
   minValidFrames: 1,
   includeTimestamp: false
 };
+const captureCounters = new Map();
 
 const emitToRenderer = (channel, payload) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -118,6 +121,49 @@ const listAllPorts = async () => {
   );
 };
 
+const sanitizePathPart = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*]+/g, "-")
+    .replace(/\s+/g, "_")
+    .replace(/^-+|-+$/g, "");
+
+const csvCell = (value) => {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
+const pad2 = (value) => String(value).padStart(2, "0");
+
+const buildCapturePath = (options) => {
+  const now = new Date();
+  const timestamp = [
+    pad2(now.getFullYear() % 100),
+    pad2(now.getMonth() + 1),
+    pad2(now.getDate())
+  ].join("") + "-" + [
+    pad2(now.getHours()),
+    pad2(now.getMinutes()),
+    pad2(now.getSeconds())
+  ].join("");
+  const label = sanitizePathPart(options?.label);
+  const useSubfolder = Boolean(options?.useSubfolder && label);
+  const usePrefix = Boolean(options?.usePrefix && label && !useSubfolder);
+  const targetDirectory = useSubfolder ? path.join(options.directory, label) : options.directory;
+  const plotNumber = Math.max(1, Number(options?.plotNumber || String(options?.title || "").match(/\d+/)?.[0] || 1));
+  const counterKey = `${targetDirectory}|${timestamp}`;
+  const counter = captureCounters.get(counterKey) || 0;
+  captureCounters.set(counterKey, counter + 1);
+  const counterText = pad2(counter);
+  const plotName = `Plot${pad2(plotNumber)}`;
+  const fileBase = `${usePrefix ? `${label}_` : ""}${plotName}_${timestamp}-${counterText}`;
+
+  return {
+    directory: targetDirectory,
+    filePath: path.join(targetDirectory, `${fileBase}.png`)
+  };
+};
+
 const handleIncomingChunk = (chunk) => {
   readBuffer += chunk.toString("utf8");
 
@@ -176,8 +222,10 @@ const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: appIconPath,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs")
+      preload: path.join(__dirname, "preload.cjs"),
+      backgroundThrottling: false
     }
   });
 
@@ -267,6 +315,138 @@ ipcMain.handle("serial:send", async (_event, message) => {
   });
 
   return { ok: true };
+});
+
+ipcMain.handle("config:save-file", async (_event, payload) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Guardar configuración",
+    defaultPath: `jw-serial-config-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+
+  if (result.canceled || !result.filePath) {
+    return { ok: false, canceled: true };
+  }
+
+  await fs.writeFile(result.filePath, payload, "utf8");
+  return { ok: true, filePath: result.filePath };
+});
+
+ipcMain.handle("config:load-file", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Cargar configuración",
+    properties: ["openFile"],
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+
+  if (result.canceled || !result.filePaths?.[0]) {
+    return { ok: false, canceled: true };
+  }
+
+  const content = await fs.readFile(result.filePaths[0], "utf8");
+  return { ok: true, filePath: result.filePaths[0], content };
+});
+
+ipcMain.handle("capture:choose-directory", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Seleccionar carpeta de capturas",
+    properties: ["openDirectory", "createDirectory"]
+  });
+
+  if (result.canceled || !result.filePaths?.[0]) {
+    return { ok: false, canceled: true };
+  }
+
+  return { ok: true, directory: result.filePaths[0] };
+});
+
+ipcMain.handle("capture:open-directory", async (_event, directory) => {
+  if (!directory) {
+    return { ok: false, error: "No hay carpeta configurada." };
+  }
+
+  await fs.mkdir(directory, { recursive: true });
+  const error = await shell.openPath(directory);
+  if (error) {
+    return { ok: false, error };
+  }
+
+  return { ok: true };
+});
+
+ipcMain.handle("session:append-event", async (_event, options) => {
+  const baseDirectory = options?.directory;
+  const label = sanitizePathPart(options?.label);
+  if (!baseDirectory || !label || !options?.useSubfolder) {
+    return { ok: false, skipped: true };
+  }
+
+  const sessionDirectory = path.join(baseDirectory, label);
+  await fs.mkdir(sessionDirectory, { recursive: true });
+  const filePath = path.join(sessionDirectory, "session_log.csv");
+  const header = "timestamp,type,detail,port,baudrate,frames,sps,lastFrameMs,captures\n";
+  try {
+    await fs.access(filePath);
+  } catch (_error) {
+    await fs.writeFile(filePath, header, "utf8");
+  }
+
+  const row = [
+    new Date().toISOString(),
+    options.type,
+    options.detail,
+    options.port,
+    options.baudRate,
+    options.frames,
+    options.sps,
+    options.lastFrameMs,
+    options.captures
+  ].map(csvCell).join(",");
+  await fs.appendFile(filePath, `${row}\n`, "utf8");
+  return { ok: true, filePath };
+});
+
+ipcMain.handle("capture:plot", async (_event, options) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: "No hay ventana activa." };
+  }
+
+  const directory = options?.directory;
+  const rect = options?.rect;
+  if (!directory || !rect) {
+    return { ok: false, error: "Faltan carpeta o área de captura." };
+  }
+
+  const image = await mainWindow.webContents.capturePage({
+    x: Math.max(0, Math.round(rect.x)),
+    y: Math.max(0, Math.round(rect.y)),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height))
+  });
+  const capturePath = buildCapturePath(options);
+  await fs.mkdir(capturePath.directory, { recursive: true });
+  const filePath = capturePath.filePath;
+  await fs.writeFile(filePath, image.toPNG());
+  return { ok: true, filePath };
+});
+
+ipcMain.handle("capture:save-plot-image", async (_event, options) => {
+  const directory = options?.directory;
+  const dataUrl = options?.dataUrl;
+  if (!directory || !dataUrl) {
+    return { ok: false, error: "Faltan carpeta o imagen." };
+  }
+
+  const match = String(dataUrl).match(/^data:image\/png;base64,(.+)$/);
+  if (!match) {
+    return { ok: false, error: "Formato de imagen inválido." };
+  }
+
+  const capturePath = buildCapturePath(options);
+  await fs.mkdir(capturePath.directory, { recursive: true });
+  const filePath = capturePath.filePath;
+  await fs.writeFile(filePath, Buffer.from(match[1], "base64"));
+  return { ok: true, filePath };
 });
 
 app.whenReady().then(() => {
