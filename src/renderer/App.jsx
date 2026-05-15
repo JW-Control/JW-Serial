@@ -1430,7 +1430,7 @@ export default function App() {
     const templates = getTemplateStore();
     if (!templates[name]) {
       syncTemplateNames();
-      setTemplateMessage("No se encontrÃ³ esa plantilla.");
+      setTemplateMessage("No se encontró esa plantilla.");
       return;
     }
     delete templates[name];
@@ -2813,7 +2813,7 @@ export default function App() {
                       <header className="plot-menu__header">
                         <div>
                           <strong>{plot.title}</strong>
-                          <span>Configurar grafico</span>
+                          <span>Configurar gráfico</span>
                         </div>
                         <button type="button" className="plot-menu__close" onClick={closeContextMenu}>
                           Cerrar
@@ -2822,7 +2822,7 @@ export default function App() {
 
                       <div className="plot-menu__section">
                         <div className="plot-menu__section-title">
-                          <strong>Asignar senal</strong>
+                          <strong>Asignar señal</strong>
                           <span>Arrastra hacia un eje</span>
                         </div>
                         <div className="plot-menu__axis-targets" role="group" aria-label="Ejes destino">
@@ -2857,12 +2857,12 @@ export default function App() {
 
                       <div className="plot-menu__section">
                         <div className="plot-menu__section-title">
-                          <strong>Senales asignadas</strong>
+                          <strong>Señales asignadas</strong>
                           <span>{plot.assignments.length} activa(s)</span>
                         </div>
                         <div className="plot-menu__assigned">
                           {plot.assignments.length === 0 ? (
-                            <span className="plot-menu__muted">Aun no hay senales en este plot.</span>
+                            <span className="plot-menu__muted">Aún no hay señales en este plot.</span>
                           ) : (
                             plot.assignments.map((assignment) => {
                               const idx = channelIndex(assignment.channelId);
@@ -2907,10 +2907,10 @@ export default function App() {
                           />
                         </div>
                         {yAssignments.length === 0 ? (
-                          <span className="plot-menu__muted">Asigna una senal en Y1 o Y2 para activar referencias.</span>
+                          <span className="plot-menu__muted">Asigna una señal en Y1 o Y2 para activar referencias.</span>
                         ) : (
                           <div className="plot-menu__stats-table">
-                            <span>Senal</span>
+                            <span>Señal</span>
                             <span>Prom</span>
                             <span>Min</span>
                             <span>Max</span>
@@ -3399,7 +3399,7 @@ export default function App() {
           <div className="modal modal--compact">
             <header className="modal__header">
               <h3>
-                {templateConfirm.type === "save" ? "Confirmar guardado" : "Confirmar eliminacion"}
+                {templateConfirm.type === "save" ? "Confirmar guardado" : "Confirmar eliminación"}
               </h3>
               <button type="button" onClick={() => setTemplateConfirm(null)}>
                 Cerrar
@@ -3410,9 +3410,9 @@ export default function App() {
                 <p className="modal__hint">
                   {templateConfirm.type === "save"
                     ? templateConfirm.overwrites
-                      ? `La plantilla "${templateConfirm.name}" ya existe. Si continuas, se reemplazara con la configuracion actual.`
-                      : `Se guardara una nueva plantilla llamada "${templateConfirm.name}".`
-                    : `Se eliminara la plantilla "${templateConfirm.name}". Esta accion no se puede deshacer.`}
+                      ? `La plantilla "${templateConfirm.name}" ya existe. Si continúas, se reemplazará con la configuración actual.`
+                      : `Se guardará una nueva plantilla llamada "${templateConfirm.name}".`
+                    : `Se eliminará la plantilla "${templateConfirm.name}". Esta acción no se puede deshacer.`}
                 </p>
                 <div className="modal__actions modal__actions--confirm">
                   <button type="button" onClick={() => setTemplateConfirm(null)}>
@@ -3420,14 +3420,18 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    className={templateConfirm.type === "delete" ? "button-danger" : "button-primary"}
+                    className={
+                      templateConfirm.type === "delete"
+                        ? "template-confirm__button template-confirm__button--danger"
+                        : "template-confirm__button template-confirm__button--primary"
+                    }
                     onClick={confirmTemplateAction}
                   >
                     {templateConfirm.type === "save"
                       ? templateConfirm.overwrites
                         ? "Confirmar reemplazo"
                         : "Confirmar guardado"
-                      : "Confirmar eliminacion"}
+                      : "Confirmar eliminación"}
                   </button>
                 </div>
               </div>

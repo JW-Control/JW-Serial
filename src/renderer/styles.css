@@ -1052,6 +1052,26 @@ textarea {
   color: #fff;
 }
 
+.template-confirm__button {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  font-weight: 600;
+}
+
+.template-confirm__button--primary {
+  border-color: var(--color-accent) !important;
+  background: var(--color-accent) !important;
+  color: #fff !important;
+}
+
+.template-confirm__button--danger {
+  border-color: #ef4444 !important;
+  background: #ef4444 !important;
+  color: #fff !important;
+}
+
 .modal__actions button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
