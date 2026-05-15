@@ -1474,7 +1474,7 @@ export default function App() {
     try {
       const response = await window.jwSerial?.saveConfigFile?.(payload);
       if (response?.ok) {
-        setConfigMessage(`Configuracion guardada en ${response.filePath}`);
+        setConfigMessage(`Configuración guardada en ${response.filePath}`);
         return;
       }
       if (response?.canceled) {
@@ -1498,7 +1498,7 @@ export default function App() {
       if (response?.ok) {
         localStorage.setItem("jwSerialConfig", response.content);
         setConfigText(response.content);
-        setConfigMessage(`Configuracion cargada desde ${response.filePath}`);
+        setConfigMessage(`Configuración cargada desde ${response.filePath}`);
         return;
       }
       if (response?.canceled) {
@@ -3414,8 +3414,12 @@ export default function App() {
                       : `Se guardará una nueva plantilla llamada "${templateConfirm.name}".`
                     : `Se eliminará la plantilla "${templateConfirm.name}". Esta acción no se puede deshacer.`}
                 </p>
-                <div className="modal__actions modal__actions--confirm">
-                  <button type="button" onClick={() => setTemplateConfirm(null)}>
+                <div className="template-confirm__actions">
+                  <button
+                    type="button"
+                    className="template-confirm__button template-confirm__button--secondary"
+                    onClick={() => setTemplateConfirm(null)}
+                  >
                     Cancelar
                   </button>
                   <button

@@ -722,8 +722,8 @@ textarea {
 }
 
 .plot-menu__axis-tabs button.is-active {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
+  border-color: var(--color-primary);
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -739,7 +739,7 @@ textarea {
 }
 
 .plot-menu__axis-target:hover {
-  border-color: var(--color-accent);
+  border-color: var(--color-primary);
   background: rgba(37, 99, 235, 0.12);
 }
 
@@ -1018,13 +1018,6 @@ textarea {
   justify-content: flex-end;
 }
 
-.modal__actions--confirm {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  gap: 10px;
-  margin-top: 12px;
-}
-
 .modal__actions button {
   padding: 6px 12px;
   border-radius: 8px;
@@ -1034,15 +1027,9 @@ textarea {
   font-size: 13px;
 }
 
-.modal__actions--confirm button {
-  min-width: 0;
-  width: 100%;
-  white-space: normal;
-}
-
 .modal__actions .button-primary {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
+  border-color: var(--color-primary);
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -1052,24 +1039,47 @@ textarea {
   color: #fff;
 }
 
+.template-confirm__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+
 .template-confirm__button {
-  display: inline-flex !important;
+  display: flex;
   align-items: center;
   justify-content: center;
   min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-control);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 13px;
   font-weight: 600;
+  text-align: center;
+  white-space: normal;
+}
+
+.template-confirm__button--secondary {
+  background: var(--color-control);
+  color: var(--color-text);
 }
 
 .template-confirm__button--primary {
-  border-color: var(--color-accent) !important;
-  background: var(--color-accent) !important;
-  color: #fff !important;
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
 }
 
 .template-confirm__button--danger {
-  border-color: #ef4444 !important;
-  background: #ef4444 !important;
-  color: #fff !important;
+  border-color: #ef4444;
+  background: #ef4444;
+  color: #fff;
 }
 
 .modal__actions button:disabled {
