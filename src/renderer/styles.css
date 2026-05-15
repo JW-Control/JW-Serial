@@ -1018,6 +1018,13 @@ textarea {
   justify-content: flex-end;
 }
 
+.modal__actions--confirm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
 .modal__actions button {
   padding: 6px 12px;
   border-radius: 8px;
@@ -1025,6 +1032,12 @@ textarea {
   background: var(--color-control);
   cursor: pointer;
   font-size: 13px;
+}
+
+.modal__actions--confirm button {
+  min-width: 0;
+  width: 100%;
+  white-space: normal;
 }
 
 .modal__actions .button-primary {

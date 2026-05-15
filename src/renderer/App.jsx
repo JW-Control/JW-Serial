@@ -3402,7 +3402,7 @@ export default function App() {
                 {templateConfirm.type === "save" ? "Confirmar guardado" : "Confirmar eliminacion"}
               </h3>
               <button type="button" onClick={() => setTemplateConfirm(null)}>
-                Cancelar
+                Cerrar
               </button>
             </header>
             <div className="modal__body">
@@ -3414,7 +3414,7 @@ export default function App() {
                       : `Se guardara una nueva plantilla llamada "${templateConfirm.name}".`
                     : `Se eliminara la plantilla "${templateConfirm.name}". Esta accion no se puede deshacer.`}
                 </p>
-                <div className="modal__actions modal__actions--end">
+                <div className="modal__actions modal__actions--confirm">
                   <button type="button" onClick={() => setTemplateConfirm(null)}>
                     Cancelar
                   </button>
@@ -3423,7 +3423,11 @@ export default function App() {
                     className={templateConfirm.type === "delete" ? "button-danger" : "button-primary"}
                     onClick={confirmTemplateAction}
                   >
-                    {templateConfirm.type === "save" ? "Guardar" : "Eliminar"}
+                    {templateConfirm.type === "save"
+                      ? templateConfirm.overwrites
+                        ? "Confirmar reemplazo"
+                        : "Confirmar guardado"
+                      : "Confirmar eliminacion"}
                   </button>
                 </div>
               </div>
