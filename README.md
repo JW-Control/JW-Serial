@@ -1,38 +1,41 @@
 # JW-Serial
 
-JW-Serial es una aplicación de escritorio para Windows que permite leer datos por puerto serial, visualizarlos en tiempo real y guardar evidencia de pruebas mediante capturas PNG, exportaciones CSV y registros de sesión.
+JW-Serial es una aplicación de escritorio para Windows orientada a lectura, visualización y documentación de datos por puerto serial. Está pensada para trabajar con microcontroladores, sensores, tarjetas electrónicas y sistemas embebidos durante pruebas cortas o sesiones largas de varias horas.
 
-Esta pensada para pruebas con microcontroladores, sensores, tarjetas electrónicas y sistemas embebidos donde necesitas observar señales durante minutos u horas sin depender del Serial Plotter del IDE.
+La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG automáticas, exportación CSV, plantillas de configuración y registro de sesión.
 
 ![JW-Serial icon](build/icon.png)
 
-## Características
+## Características Principales
 
 - Lectura de datos por puerto serial.
 - Plotter en tiempo real con múltiples gráficos.
 - Monitor serial integrado.
-- Asignación rápida de variables por drag and drop.
-- Ejes X, Y1 y Y2 configurables por plot.
-- Modo de ejes automático, manual y ventana deslizante.
-- Capturas PNG manuales y automáticas.
+- Variables configurables con nombre, color, estilo y grosor.
+- Asignación de señales por drag and drop hacia X, Y1 o Y2.
+- Menú contextual por gráfico para asignar, quitar y configurar señales rápidamente.
+- Ejes X, Y1 y Y2 con modo automático y manual.
+- Escalas canónicas para ejes y grillas legibles.
+- Capturas PNG manuales y automáticas de cada plot.
 - Capturas funcionando incluso con la ventana minimizada.
-- Nombres de captura por lote, prefijo y subcarpeta.
-- Registro `session_log.csv` por sesión de prueba.
+- Nombres de captura con lote, prefijo y subcarpeta.
+- Registro `session_log.csv` para documentar sesiones de prueba.
 - Marcadores de eventos durante la adquisición.
+- Cálculo de métricas de recepción desde el software.
 - Modo claro y modo oscuro.
 - Plantillas internas de configuración.
 - Guardado y carga de configuración por archivo JSON.
 - Exportación CSV de datos capturados.
-- Versión portable e instalador para Windows.
+- Instalador y versión portable para Windows.
 
 ## Descarga
 
 En la sección de releases de GitHub se publican dos opciones:
 
-- `JW-Serial-Setup-1.0.0-x64.exe`: instalador para Windows.
-- `JW-Serial-Portable.exe`: versión portable, no requiere instalación.
+- `JW-Serial-Setup-1.1.0-x64.exe`: instalador para Windows.
+- `JW-Serial-Portable-1.1.0-x64.exe`: versión portable, no requiere instalación.
 
-Para la mayoría de usuarios, la versión portable es suficiente: descárgala, ejecútala y conecta tu dispositivo serial.
+Para la mayoría de usuarios, la versión portable es suficiente: descarga el ejecutable, ábrelo y conecta tu dispositivo serial.
 
 ## Uso Rápido
 
@@ -41,14 +44,14 @@ Para la mayoría de usuarios, la versión portable es suficiente: descárgala, e
 3. Pulsa **Refrescar** para listar puertos disponibles.
 4. Selecciona el puerto y el baudrate.
 5. Pulsa **Conectar**.
-6. Arrastra variables desde el panel izquierdo hacia un plot.
-7. Asigna cada variable a X, Y1 o Y2.
+6. Arrastra variables hacia un plot.
+7. Asigna cada variable a **X**, **Y1** o **Y2**.
 8. Usa **Capturar plots** para guardar evidencia visual.
 9. Usa **CSV** si necesitas exportar datos.
 
 ## Formato Serial Soportado
 
-JW-Serial espera líneas de texto separadas por salto de linea.
+JW-Serial espera líneas de texto separadas por salto de línea. Cada línea debe contener valores numéricos separados por coma o tabulador.
 
 Ejemplo con coma:
 
@@ -64,11 +67,11 @@ Ejemplo con tabulador:
 12.4	45.8	78.7
 ```
 
-La app detecta automáticamente si la trama usa coma o tabulador.
+La aplicación detecta automáticamente si la trama usa coma o tabulador.
 
 ### Timestamp en X
 
-Por defecto, JW-Serial usa el índice de muestra como eje X. Si tu firmware envía un timestamp como primer valor, puedes activar **Incluye timestamp en X** desde **Configuración**.
+Por defecto, JW-Serial puede usar el índice de muestra como eje X. Si tu firmware envía un timestamp como primer valor, puedes activar **Incluye timestamp en X** desde **Configuración**.
 
 Ejemplo:
 
@@ -77,13 +80,13 @@ Ejemplo:
 1262,3.32,7.51,0.16
 ```
 
-En ese caso, el primer valor puede usarse como X y los demás como variables.
+En ese caso, el primer valor puede usarse como X y los demás valores como variables.
 
 ## Interfaz
 
-La ventana principal esta organizada en dos zonas.
+La ventana principal está organizada en dos zonas: panel lateral y área principal.
 
-### Panel Izquierdo
+### Panel Lateral
 
 Incluye:
 
@@ -91,45 +94,65 @@ Incluye:
 - Selector de tema claro/oscuro.
 - Puerto y baudrate.
 - Botones de conexión.
-- Metricas de recepción:
+- Métricas de recepción:
   - SPS calculados por el software.
   - Tiempo promedio entre muestras.
   - Jitter aproximado.
 - Lista de variables detectadas.
-- Acciones rapidas:
+- Acciones rápidas:
   - Configuración.
   - Pausar.
-  - Limpiar.
-  - CSV.
+  - Limpiar buffer.
+  - Exportar CSV.
   - Evento.
   - Capturar plots.
   - Configuración de capturas.
   - Guardar y cargar configuración.
 
-### Area Principal
+### Área Principal
 
 Incluye:
 
 - Vista **Plotter**.
 - Vista **Monitor**.
 - Botones para agregar o quitar plots.
-- Gráficos con leyenda, ejes, grilla y controles manuales.
+- Gráficos con título, leyenda, ejes, grilla y controles de escala.
 
 ## Plots y Asignación de Ejes
 
 Cada plot puede trabajar con:
 
-- Una variable en X.
-- Una o mas variables en Y1.
-- Una o mas variables en Y2.
+- Una variable en **X**.
+- Una o más variables en **Y1**.
+- Una o más variables en **Y2**.
 
-Puedes asignar variables de tres formas:
+Puedes asignar variables de varias formas:
 
-- Arrastrando desde la lista de variables hacia el eje correspondiente.
-- Soltando sobre el area del plot para que JW-Serial pregunte donde asignarla.
-- Usando los controles del plot.
+- Arrastrando desde la lista de variables del panel lateral hacia el eje correspondiente.
+- Soltando sobre el área del plot para que JW-Serial pregunte dónde asignarla.
+- Usando el menú contextual del gráfico con click derecho.
 
-Cuando arrastras una variable, las zonas validas se resaltan para guiar la asignación.
+En el menú contextual, las variables pueden arrastrarse hacia las zonas **X**, **Y1** o **Y2**, lo que permite reasignar señales rápidamente sin recorrer toda la pantalla.
+
+## Curvas de Referencia
+
+Desde el menú contextual de cada plot puedes activar curvas de referencia por señal:
+
+- Promedio.
+- Mínimo.
+- Máximo.
+
+La ventana de cálculo puede definirse por cantidad de muestras o por segundos.
+
+## Ejes y Escalas
+
+JW-Serial usa pasos de escala legibles y consistentes, por ejemplo:
+
+```text
+0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500
+```
+
+Los ejes pueden trabajar en modo automático o manual. En modo manual puedes desplazar la vista con la rueda del mouse o arrastrando sobre la zona correspondiente.
 
 ## Capturas
 
@@ -147,7 +170,7 @@ Las capturas pueden ser:
 - Manuales, desde la ventana **Capturas** con **Capturar ahora**.
 - Automáticas, usando un intervalo configurable.
 
-El boton **Capturar plots** también muestra el tiempo restante para la siguiente captura automática.
+El botón **Capturar plots** también muestra el tiempo restante para la siguiente captura automática. Si las capturas automáticas están activadas pero el puerto está desconectado, la intención del usuario se conserva y el sistema espera hasta que el puerto vuelva a estar conectado.
 
 ### Carpeta de Capturas
 
@@ -183,12 +206,12 @@ PlotXX_AAMMDD-HHMMSS-NN.png
 
 Donde:
 
-- `XX`: numero de plot con dos digitos.
+- `XX`: número de plot con dos dígitos.
 - `AAMMDD`: fecha.
 - `HHMMSS`: hora.
-- `NN`: contador para evitar sobrescrituras si hay mas de una captura en el mismo segundo.
+- `NN`: contador para evitar sobrescrituras si hay más de una captura en el mismo segundo.
 
-## Registro de Sesion
+## Registro de Sesión
 
 Cuando se usa identificador y subcarpeta, JW-Serial crea un archivo:
 
@@ -209,7 +232,7 @@ Esto ayuda a documentar pruebas largas y asociar capturas con momentos concretos
 
 ## Eventos
 
-El boton **Evento** permite anotar sucesos durante una prueba.
+El botón **Evento** permite anotar sucesos durante una prueba.
 
 Ejemplos:
 
@@ -221,7 +244,7 @@ Se movió sensor
 Fin de prueba
 ```
 
-Los eventos se guardan en el `session_log.csv` cuando la sesión esta configurada con subcarpeta de lote.
+Los eventos se guardan en `session_log.csv` cuando la sesión está configurada con subcarpeta de lote.
 
 ## Plantillas
 
@@ -244,29 +267,27 @@ No guardan:
 - Buffer de muestras.
 - Historial del monitor.
 
-Las plantillas se guardan internamente en el perfil de usuario de Electron. En Windows, esto corresponde al espacio de datos de la aplicacion, normalmente bajo:
+Las plantillas se guardan internamente en el perfil de usuario de Electron. En Windows, normalmente se ubican dentro del espacio de datos de la aplicación:
 
 ```text
 C:\Users\<usuario>\AppData\Roaming\JW-Serial
 ```
 
-La ventana de plantillas muestra las plantillas existentes, por lo que no necesitas recordar los nombres exactos.
+La ventana de plantillas muestra las plantillas existentes, por lo que no necesitas recordar los nombres exactos. Las acciones **Guardar como** y **Eliminar** piden confirmación antes de modificar una plantilla.
 
-## Configuracion JSON
+## Configuración JSON
 
-Ademas de las plantillas internas, JW-Serial permite guardar y cargar configuracion como archivo `.json`.
+Además de las plantillas internas, JW-Serial permite guardar y cargar configuración como archivo `.json`.
 
-Esto es util para:
+Esto es útil para:
 
 - Respaldar configuraciones.
 - Compartir configuraciones entre PCs.
-- Guardar una configuracion junto con la documentacion de un proyecto.
+- Guardar una configuración junto con la documentación de un proyecto.
 
 ## Modo Claro y Oscuro
 
-JW-Serial incluye modo claro y modo oscuro.
-
-El modo oscuro esta pensado para sesiones largas, pruebas nocturnas o ambientes de baja luz. El modo claro es util para oficina, capturas limpias y documentación.
+JW-Serial incluye modo claro y modo oscuro. El modo oscuro está pensado para sesiones largas, pruebas nocturnas o ambientes de baja luz. El modo claro es útil para oficina, capturas limpias y documentación.
 
 ## Recomendaciones Para Pruebas Largas
 
@@ -276,3 +297,39 @@ El modo oscuro esta pensado para sesiones largas, pruebas nocturnas o ambientes 
 - Define un intervalo adecuado, por ejemplo 10 o 15 minutos.
 - Agrega eventos cuando ocurra algo relevante.
 - Al finalizar, revisa la carpeta del lote y el `session_log.csv`.
+
+## Desarrollo
+
+Instalar dependencias:
+
+```bash
+npm install
+```
+
+Ejecutar en modo desarrollo:
+
+```bash
+npm run dev
+```
+
+Compilar renderer:
+
+```bash
+npm run build
+```
+
+Generar instalador y portable para Windows:
+
+```bash
+npm run dist:win
+```
+
+Los archivos generados se ubican en:
+
+```text
+release/
+```
+
+## Licencia
+
+Este proyecto usa licencia MIT. Consulta el archivo `LICENSE`.

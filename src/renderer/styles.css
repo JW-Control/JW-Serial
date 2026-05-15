@@ -652,23 +652,50 @@ textarea {
 .plot-menu {
   position: fixed;
   z-index: 50;
-  width: 300px;
+  width: 340px;
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: 10px;
   box-shadow: 0 12px 24px var(--color-menu-shadow);
-  padding: 10px;
+  padding: 0;
   display: grid;
-  gap: 12px;
-  max-height: min(74vh, 340px);
+  max-height: min(78vh, 520px);
   overflow: auto;
+}
+
+.plot-menu__header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.plot-menu__header div {
+  display: grid;
+  gap: 2px;
+}
+
+.plot-menu__header span,
+.plot-menu__section-title span {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.plot-menu__close {
+  min-width: 72px;
 }
 
 .plot-menu__channels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  max-height: 180px;
+  max-height: 150px;
   overflow: auto;
 }
 
@@ -676,6 +703,84 @@ textarea {
   display: grid;
   gap: 8px;
   font-size: 12px;
+  padding: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.plot-menu__section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plot-menu__axis-tabs,
+.plot-menu__axis-targets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.plot-menu__axis-tabs button.is-active {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.plot-menu__axis-target {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-control);
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.plot-menu__axis-target:hover {
+  border-color: var(--color-accent);
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.plot-menu__channel {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  user-select: none;
+}
+
+.plot-menu__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.plot-menu__assigned {
+  display: grid;
+  gap: 6px;
+}
+
+.plot-menu__assigned-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-control);
+}
+
+.plot-menu__axis-pill {
+  min-width: 28px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-muted);
+  text-align: center;
 }
 
 .plot-menu__actions {
@@ -691,6 +796,16 @@ textarea {
   background: var(--color-control);
   cursor: pointer;
   font-size: 12px;
+  color: var(--color-text);
+}
+
+.plot-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.plot-menu__modes {
+  display: none;
 }
 
 .monitor {
@@ -755,6 +870,10 @@ textarea {
   align-items: center;
   justify-content: center;
   padding: 24px;
+}
+
+.modal-backdrop--top {
+  z-index: 80;
 }
 
 .capture-clean .modal-backdrop,
@@ -895,6 +1014,10 @@ textarea {
   margin-top: 20px;
 }
 
+.modal__actions--end {
+  justify-content: flex-end;
+}
+
 .modal__actions button {
   padding: 6px 12px;
   border-radius: 8px;
@@ -902,6 +1025,18 @@ textarea {
   background: var(--color-control);
   cursor: pointer;
   font-size: 13px;
+}
+
+.modal__actions .button-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.modal__actions .button-danger {
+  border-color: #ef4444;
+  background: #ef4444;
+  color: #fff;
 }
 
 .modal__actions button:disabled {
@@ -952,6 +1087,70 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.plot-menu__inline-fields label {
+  display: grid;
+  gap: 4px;
+}
+
+.plot-menu__section--fold > .plot-menu__stat-group {
+  display: none;
+}
+
+.plot-menu__stats-window,
+.plot-menu__inline-fields {
+  align-items: end;
+}
+
+.plot-menu__stats-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 46px);
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.plot-menu__stats-table > span {
+  color: var(--color-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.plot-menu__stats-table > span:first-child {
+  text-align: left;
+}
+
+.plot-menu__stats-signal {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-control);
+}
+
+.plot-menu__stats-signal span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plot-menu__stats-signal span:last-child {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.plot-menu__stat-check {
+  display: grid;
+  place-items: center;
+  min-height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-control);
 }
 
 .variable-menu {
