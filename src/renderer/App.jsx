@@ -67,6 +67,12 @@ const dashByStyle = {
   dotted: "2 4"
 };
 
+const axisLabels = {
+  x: "X",
+  y1: "Y1",
+  y2: "Y2"
+};
+
 const buildPath = (points) =>
   points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
@@ -177,6 +183,94 @@ const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
   }
 
   return makeTicks(minValue, maxValue, targetTicks);
+};
+
+const makeTicksFromStepRange = (minValue, maxValue, step) => {
+  const safeStep = Number.isFinite(step) && step > 0 ? step : minStep;
+  const min = Number.isFinite(minValue) ? minValue : 0;
+  const max = Number.isFinite(maxValue) && maxValue > min ? maxValue : min + safeStep;
+  const start = Math.ceil(min / safeStep) * safeStep;
+  const ticks = [];
+
+  for (let tick = start; tick <= max + safeStep * 0.0001; tick += safeStep) {
+    ticks.push(Number(tick.toFixed(6)));
+  }
+
+  if (ticks.length < 2) {
+    ticks.push(Number((start + safeStep).toFixed(6)));
+  }
+
+  return {
+    ticks,
+    min: Number(min.toFixed(6)),
+    max: Number(max.toFixed(6)),
+    step: safeStep
+  };
+};
+
+const makeYAxisTicksFollowingReference = (referenceTicksData, targetStats, targetStep, previousState) => {
+  const referenceStep = referenceTicksData.step || 1;
+  const referenceSpan = referenceTicksData.max - referenceTicksData.min || referenceStep;
+  const targetSpan = (referenceSpan / referenceStep) * targetStep;
+  const firstReferenceTick = referenceTicksData.ticks[0] ?? referenceTicksData.min;
+  const referenceTickOffset = (firstReferenceTick - referenceTicksData.min) / referenceStep;
+  const targetMid = (targetStats.min + targetStats.max) * 0.5;
+  const targetHasZero = Number.isFinite(targetStats.min)
+    && Number.isFinite(targetStats.max)
+    && targetStats.min <= 0
+    && targetStats.max >= 0;
+  const alignTargetValueToReferenceTick = (firstTick, targetValue) => {
+    const nearestIndex = Math.round((targetValue - firstTick) / targetStep);
+    const boundedIndex = Math.min(
+      Math.max(nearestIndex, 0),
+      Math.max(referenceTicksData.ticks.length - 1, 0)
+    );
+    return Number((targetValue - boundedIndex * targetStep).toFixed(6));
+  };
+  let firstTargetTick;
+
+  if (previousState && previousState.step === targetStep && Number.isFinite(previousState.firstTargetTick)) {
+    const referenceDeltaTicks = (firstReferenceTick - previousState.firstReferenceTick) / (previousState.referenceStep || referenceStep);
+    firstTargetTick = previousState.firstTargetTick + referenceDeltaTicks * targetStep;
+  } else {
+    const approximateFirstTick = targetMid - targetSpan * 0.5 + referenceTickOffset * targetStep;
+    firstTargetTick = Math.round(approximateFirstTick / targetStep) * targetStep;
+  }
+
+  if (targetHasZero) {
+    firstTargetTick = alignTargetValueToReferenceTick(firstTargetTick, 0);
+  }
+
+  let min = firstTargetTick - referenceTickOffset * targetStep;
+  let max = min + targetSpan;
+
+  while (targetStats.min < min) {
+    firstTargetTick -= targetStep;
+    min -= targetStep;
+    max -= targetStep;
+  }
+  while (targetStats.max > max) {
+    firstTargetTick += targetStep;
+    min += targetStep;
+    max += targetStep;
+  }
+
+  const ticks = referenceTicksData.ticks.map((_, index) =>
+    Number((firstTargetTick + index * targetStep).toFixed(6))
+  );
+
+  return {
+    ticks,
+    min: Number(min.toFixed(6)),
+    max: Number(max.toFixed(6)),
+    step: targetStep,
+    state: {
+      firstReferenceTick,
+      firstTargetTick,
+      referenceStep,
+      step: targetStep
+    }
+  };
 };
 
 const filterTicksByPixelGap = (ticks, toPx, minGap = 22) => {
@@ -381,6 +475,7 @@ export default function App() {
   const [selectedTemplateName, setSelectedTemplateName] = useState("");
   const [templateNames, setTemplateNames] = useState(() => getTemplateNames());
   const [templateMessage, setTemplateMessage] = useState("");
+  const [templateConfirm, setTemplateConfirm] = useState(null);
   const [eventText, setEventText] = useState("");
   const [rxStats, setRxStats] = useState({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
   const [dataVersion, setDataVersion] = useState(0);
@@ -409,6 +504,7 @@ export default function App() {
   const plotRefCallbacks = useRef(new Map());
   const plotResizeObservers = useRef(new Map());
   const captureInProgressRef = useRef(false);
+  const y2FollowStateRef = useRef(new Map());
   const historyRef = useRef([]);
   const rxTimesRef = useRef([]);
 
@@ -441,23 +537,27 @@ export default function App() {
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
 
+  const isSerialConnected = connectionStatus === "connected";
+
   const captureCountdown = useMemo(() => {
     const intervalMs = Math.max(1, Number(captureConfig.intervalMinutes) || 10) * 60 * 1000;
     const remainingMs = nextCaptureAt ? Math.max(0, nextCaptureAt - captureTimerNow) : intervalMs;
-    const progress = captureConfig.enabled && captureConfig.directory && nextCaptureAt
+    const progress = captureConfig.enabled && isSerialConnected && captureConfig.directory && nextCaptureAt
       ? clamp(1 - remainingMs / intervalMs, 0, 1)
       : 0;
     let label = "Capturar plots";
-    if (captureConfig.enabled && captureConfig.directory && nextCaptureAt) {
+    if (captureConfig.enabled && isSerialConnected && captureConfig.directory && nextCaptureAt) {
       const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
       const minutes = Math.floor(totalSeconds / 60);
       const seconds = totalSeconds % 60;
       label = `Capturar plots - ${minutes}:${seconds.toString().padStart(2, "0")}`;
+    } else if (captureConfig.enabled && !isSerialConnected) {
+      label = "Capturar plots - sin COM";
     } else if (captureConfig.enabled && !captureConfig.directory) {
       label = "Capturar plots - sin carpeta";
     }
     return { label, progress };
-  }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes, captureTimerNow, nextCaptureAt]);
+  }, [captureConfig.enabled, isSerialConnected, captureConfig.directory, captureConfig.intervalMinutes, captureTimerNow, nextCaptureAt]);
 
     const statusTone = isPaused
     ? "paused"
@@ -582,7 +682,7 @@ export default function App() {
     Math.max(1, Number(config.intervalMinutes) || 10) * 60 * 1000;
 
   const resetCaptureTimer = (from = Date.now(), config = captureConfig) => {
-    if (!config.enabled || !config.directory) {
+    if (!config.enabled || !config.directory || connectionStatus !== "connected") {
       setNextCaptureAt(null);
       return;
     }
@@ -1054,11 +1154,21 @@ export default function App() {
     });
   };
 
+  const handlePlotMenuAxisDrop = (event, plotId, axis) => {
+    const channelId = event.dataTransfer.getData("application/x-jw-channel") || event.dataTransfer.getData("text/plain");
+    if (!channelId) {
+      return;
+    }
+
+    event.preventDefault();
+    assignChannelToAxis(plotId, channelId, axis);
+  };
+
 
   const openContextMenu = (event, plotId) => {
     event.preventDefault();
-    const menuWidth = 300;
-    const menuHeight = 340;
+    const menuWidth = 340;
+    const menuHeight = Math.min(520, Math.floor(window.innerHeight * 0.78));
     const x = clamp(event.clientX, 8, window.innerWidth - menuWidth - 8);
     const y = event.clientY + menuHeight > window.innerHeight - 8
       ? Math.max(8, event.clientY - menuHeight)
@@ -1104,9 +1214,10 @@ export default function App() {
     assignChannelToAxis(plotId, channelId, draft.axis);
   };
 
-  const removeAssignment = (plotId) => {
+  const removeAssignment = (plotId, assignmentKey = null) => {
     const draft = getDraft(plotId);
-    if (!draft.removeKey) {
+    const keyToRemove = assignmentKey || draft.removeKey;
+    if (!keyToRemove) {
       return;
     }
 
@@ -1118,12 +1229,14 @@ export default function App() {
         return {
           ...plot,
           assignments: plot.assignments.filter(
-            (item) => `${item.channelId}:${item.axis}` !== draft.removeKey
+            (item) => `${item.channelId}:${item.axis}` !== keyToRemove
           )
         };
       })
     );
-    closeContextMenu();
+    if (!assignmentKey) {
+      closeContextMenu();
+    }
   };
 
   const clearAssignments = (plotId) => {
@@ -1133,7 +1246,10 @@ export default function App() {
     closeContextMenu();
   };
 
-  const closeModal = () => setModal(null);
+  const closeModal = () => {
+    setTemplateConfirm(null);
+    setModal(null);
+  };
 
   const handleSend = async () => {
     if (!monitorMessage.trim()) {
@@ -1271,18 +1387,27 @@ export default function App() {
     return names;
   };
 
-  const saveTemplate = () => {
-    const name = templateName.trim();
-    if (!name) {
-      setTemplateMessage("Escribe un nombre en Guardar como.");
-      return;
-    }
+  const saveTemplateNow = (name) => {
     const templates = getTemplateStore();
     templates[name] = buildConfigSnapshot();
     localStorage.setItem(templateStorageKey, JSON.stringify(templates));
     syncTemplateNames(templates, name);
     setTemplateName("");
     setTemplateMessage(`Plantilla guardada: ${name}`);
+  };
+
+  const requestSaveTemplate = () => {
+    const name = templateName.trim();
+    if (!name) {
+      setTemplateMessage("Escribe un nombre en Guardar como.");
+      return;
+    }
+    const templates = getTemplateStore();
+    setTemplateConfirm({
+      type: "save",
+      name,
+      overwrites: Boolean(templates[name])
+    });
   };
 
   const loadTemplate = () => {
@@ -1301,7 +1426,20 @@ export default function App() {
     setTemplateMessage(`Plantilla cargada: ${name}`);
   };
 
-  const deleteTemplate = () => {
+  const deleteTemplateNow = (name) => {
+    const templates = getTemplateStore();
+    if (!templates[name]) {
+      syncTemplateNames();
+      setTemplateMessage("No se encontrÃ³ esa plantilla.");
+      return;
+    }
+    delete templates[name];
+    localStorage.setItem(templateStorageKey, JSON.stringify(templates));
+    syncTemplateNames(templates, "");
+    setTemplateMessage(`Plantilla eliminada: ${name}`);
+  };
+
+  const requestDeleteTemplate = () => {
     const name = selectedTemplateName.trim();
     if (!name) {
       setTemplateMessage("Selecciona una plantilla para eliminar.");
@@ -1313,10 +1451,20 @@ export default function App() {
       setTemplateMessage("No se encontró esa plantilla.");
       return;
     }
-    delete templates[name];
-    localStorage.setItem(templateStorageKey, JSON.stringify(templates));
-    syncTemplateNames(templates, "");
-    setTemplateMessage(`Plantilla eliminada: ${name}`);
+    setTemplateConfirm({ type: "delete", name });
+  };
+
+  const confirmTemplateAction = () => {
+    if (!templateConfirm) {
+      return;
+    }
+    if (templateConfirm.type === "save") {
+      saveTemplateNow(templateConfirm.name);
+    }
+    if (templateConfirm.type === "delete") {
+      deleteTemplateNow(templateConfirm.name);
+    }
+    setTemplateConfirm(null);
   };
 
   const handleSaveConfig = async () => {
@@ -1678,7 +1826,7 @@ export default function App() {
 
   useEffect(() => {
     resetCaptureTimer();
-  }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes]);
+  }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes, connectionStatus]);
 
   useEffect(() => {
     if (!nextCaptureAt) {
@@ -1690,7 +1838,7 @@ export default function App() {
   }, [nextCaptureAt]);
 
   useEffect(() => {
-    if (!captureConfig.enabled || !captureConfig.directory || !nextCaptureAt) {
+    if (!captureConfig.enabled || connectionStatus !== "connected" || !captureConfig.directory || !nextCaptureAt) {
       return undefined;
     }
 
@@ -1698,7 +1846,7 @@ export default function App() {
       captureAllPlots({ automatic: true });
     }, Math.max(0, nextCaptureAt - Date.now()));
     return () => window.clearTimeout(timeout);
-  }, [captureConfig.enabled, captureConfig.directory, nextCaptureAt, plots]);
+  }, [captureConfig.enabled, connectionStatus, captureConfig.directory, nextCaptureAt, plots]);
 
   useEffect(() => {
     if (
@@ -1869,6 +2017,8 @@ export default function App() {
 
     const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
     const hasRenderableData = samples.length >= 2 && plot.assignments.length > 0 && yAssignments.length > 0;
+    const hasY1Assignments = yAssignments.some((item) => item.axis === "y1");
+    const hasY2Assignments = yAssignments.some((item) => item.axis === "y2");
 
     const axisStats = {
       y1: { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY },
@@ -1889,10 +2039,14 @@ export default function App() {
 
     const y1AutoRange = Number.isFinite(axisStats.y1.min)
       ? normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max)
-      : { min: basePlotTicks.y1.min, max: basePlotTicks.y1.max };
+      : Number.isFinite(axisStats.y2.min)
+        ? normalizeYAxisRange(axisStats.y2.min, axisStats.y2.max)
+        : { min: basePlotTicks.y1.min, max: basePlotTicks.y1.max };
     const y2AutoRange = Number.isFinite(axisStats.y2.min)
       ? normalizeYAxisRange(axisStats.y2.min, axisStats.y2.max)
-      : { min: basePlotTicks.y2.min, max: basePlotTicks.y2.max };
+      : Number.isFinite(axisStats.y1.min)
+        ? normalizeYAxisRange(axisStats.y1.min, axisStats.y1.max)
+        : { min: basePlotTicks.y2.min, max: basePlotTicks.y2.max };
 
     const y1Range = plot.y1Mode === "manual"
       ? {
@@ -1911,9 +2065,30 @@ export default function App() {
     const y1TicksData = hasRenderableData
       ? makeYAxisTicks(y1Range.min, y1Range.max, height - padding.top - padding.bottom)
       : basePlotTicks.y1;
-    const y2TicksData = hasRenderableData
-      ? makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom)
-      : basePlotTicks.y2;
+    const makeY2FollowTicks = () => {
+      const ownTicks = makeYAxisTicks(y2Range.min, y2Range.max, height - padding.top - padding.bottom);
+      if (!hasY1Assignments || plot.y1Mode !== "auto" || plot.y2Mode !== "auto") {
+        y2FollowStateRef.current.delete(plot.id);
+        return ownTicks;
+      }
+
+      const previous = y2FollowStateRef.current.get(plot.id);
+      const referenceIntervals = Math.max(1, y1TicksData.ticks.length - 1);
+      const followStep = pickStep(y2Range.max - y2Range.min, referenceIntervals);
+      const followedTicks = makeYAxisTicksFollowingReference(y1TicksData, axisStats.y2, followStep || ownTicks.step || minStep, previous);
+      y2FollowStateRef.current.set(plot.id, followedTicks.state);
+      return {
+        ticks: followedTicks.ticks,
+        min: followedTicks.min,
+        max: followedTicks.max,
+        step: followedTicks.step
+      };
+    };
+    const y2TicksData = hasRenderableData && hasY2Assignments
+      ? makeY2FollowTicks()
+      : hasRenderableData && hasY1Assignments
+        ? y1TicksData
+        : basePlotTicks.y2;
 
     const xRange = findFiniteRange(xValues);
     const xMin = xRange?.min ?? basePlotTicks.x.min;
@@ -1926,7 +2101,7 @@ export default function App() {
 
     const xMinorTicks = makeMinorTicks(xTicksData, getStepDivisionBase(xTicksData.step));
     const y1MinorTicks = makeMinorTicks(y1TicksData, getStepDivisionBase(y1TicksData.step));
-    const y2MinorTicks = makeMinorTicks(y2TicksData, getStepDivisionBase(y2TicksData.step));
+    const y2MinorTicks = [];
 
     const yTickToPx = (value, ticksData) => {
       const ratio = (value - ticksData.min) / (ticksData.max - ticksData.min || 1);
@@ -2562,9 +2737,6 @@ export default function App() {
           <div ref={plotsRef} className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
             {plots.map((plot) => {
               const draft = getDraft(plot.id);
-              const assignmentOptions = plot.assignments.map(
-                (item) => `${item.channelId}:${item.axis}`
-              );
               const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
               const legendEntries = plot.assignments.map((assignment) => {
                 const idx = channelIndex(assignment.channelId);
@@ -2638,59 +2810,87 @@ export default function App() {
                       onClick={(event) => event.stopPropagation()}
                       onPointerDown={(event) => event.stopPropagation()}
                     >
+                      <header className="plot-menu__header">
+                        <div>
+                          <strong>{plot.title}</strong>
+                          <span>Configurar grafico</span>
+                        </div>
+                        <button type="button" className="plot-menu__close" onClick={closeContextMenu}>
+                          Cerrar
+                        </button>
+                      </header>
+
                       <div className="plot-menu__section">
-                        <strong>Add data</strong>
-                        <select
-                          value={draft.axis}
-                          onChange={(event) => setDraft(plot.id, { axis: event.target.value })}
-                        >
-                          <option value="x">X</option>
-                          <option value="y1">Y1</option>
-                          <option value="y2">Y2</option>
-                        </select>
+                        <div className="plot-menu__section-title">
+                          <strong>Asignar senal</strong>
+                          <span>Arrastra hacia un eje</span>
+                        </div>
+                        <div className="plot-menu__axis-targets" role="group" aria-label="Ejes destino">
+                          {["x", "y1", "y2"].map((axis) => (
+                            <div
+                              key={axis}
+                              className="plot-menu__axis-target"
+                              onDragOver={(event) => event.preventDefault()}
+                              onDrop={(event) => handlePlotMenuAxisDrop(event, plot.id, axis)}
+                            >
+                              {axisLabels[axis]}
+                            </div>
+                          ))}
+                        </div>
                         <div className="plot-menu__channels">
                           {visibleChannels.map((channel) => (
                             <button
                               key={channel.id}
                               type="button"
-                              onClick={() => addAssignment(plot.id, channel.id)}
+                              className="plot-menu__channel"
+                              draggable
+                              onDragStart={(event) => handleChannelDragStart(event, channel.id)}
+                              title={`Arrastra ${channel.name} hacia X, Y1 o Y2`}
                             >
-                              {channel.name}
+                              <span className="plot-menu__dot" style={{ backgroundColor: channel.color }} />
+                              <span>{channel.name}</span>
+                              <span>{Number(channel.value || 0).toFixed(2)}</span>
                             </button>
                           ))}
                         </div>
                       </div>
 
                       <div className="plot-menu__section">
-                        <strong>Remove channel</strong>
-                        <select
-                          value={draft.removeKey}
-                          onChange={(event) =>
-                            setDraft(plot.id, { removeKey: event.target.value })
-                          }
-                        >
-                          <option value="">Seleccionar para remover</option>
-                          {assignmentOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="plot-menu__section-title">
+                          <strong>Senales asignadas</strong>
+                          <span>{plot.assignments.length} activa(s)</span>
+                        </div>
+                        <div className="plot-menu__assigned">
+                          {plot.assignments.length === 0 ? (
+                            <span className="plot-menu__muted">Aun no hay senales en este plot.</span>
+                          ) : (
+                            plot.assignments.map((assignment) => {
+                              const idx = channelIndex(assignment.channelId);
+                              const channel = channels[idx];
+                              const assignmentKey = `${assignment.channelId}:${assignment.axis}`;
+                              return (
+                                <div key={assignmentKey} className="plot-menu__assigned-row">
+                                  <span className="plot-menu__dot" style={{ backgroundColor: channel?.color || "#64748b" }} />
+                                  <span>{channel?.name || assignment.channelId}</span>
+                                  <span className="plot-menu__axis-pill">{axisLabels[assignment.axis]}</span>
+                                  <button type="button" onClick={() => removeAssignment(plot.id, assignmentKey)}>
+                                    Quitar
+                                  </button>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
                         <div className="plot-menu__actions">
-                          <button type="button" onClick={() => removeAssignment(plot.id)}>
-                            Remove
+                          <button type="button" onClick={() => clearAssignments(plot.id)} disabled={plot.assignments.length === 0}>
+                            Limpiar plot
                           </button>
-                          <button type="button" onClick={() => clearAssignments(plot.id)}>
-                            Remove all
-                          </button>
-                          <button type="button" onClick={closeContextMenu}>
-                            Cerrar
-                          </button>
+                          <button type="button" onClick={closeContextMenu}>Listo</button>
                         </div>
                       </div>
 
-                      <div className="plot-menu__section">
-                        <strong>Stat curves</strong>
+                      <div className="plot-menu__section plot-menu__section--fold">
+                        <strong>Curvas de referencia</strong>
                         <div className="plot-menu__inline-fields">
                           <select
                             value={plot.statsWindowUnit}
@@ -2706,6 +2906,47 @@ export default function App() {
                             onChange={(event) => updatePlotSettings(plot.id, { statsWindowValue: Math.max(2, Number(event.target.value) || 2) })}
                           />
                         </div>
+                        {yAssignments.length === 0 ? (
+                          <span className="plot-menu__muted">Asigna una senal en Y1 o Y2 para activar referencias.</span>
+                        ) : (
+                          <div className="plot-menu__stats-table">
+                            <span>Senal</span>
+                            <span>Prom</span>
+                            <span>Min</span>
+                            <span>Max</span>
+                            {yAssignments.map((assignment) => {
+                              const targetKey = `${assignment.channelId}:${assignment.axis}`;
+                              const idx = channelIndex(assignment.channelId);
+                              const channel = channels[idx];
+                              const stats = [
+                                { field: "statAvgTargets", label: "Promedio" },
+                                { field: "statMinTargets", label: "Minimo" },
+                                { field: "statMaxTargets", label: "Maximo" }
+                              ];
+                              return (
+                                <React.Fragment key={targetKey}>
+                                  <div className="plot-menu__stats-signal">
+                                    <span className="plot-menu__dot" style={{ backgroundColor: channel?.color || "#64748b" }} />
+                                    <span>{channel?.name || assignment.channelId}</span>
+                                    <span>{axisLabels[assignment.axis]}</span>
+                                  </div>
+                                  {stats.map((stat) => {
+                                    const selected = (Array.isArray(plot[stat.field]) ? plot[stat.field] : []).includes(targetKey);
+                                    return (
+                                      <label key={`${targetKey}-${stat.field}`} className="plot-menu__stat-check" title={`${stat.label} de ${channel?.name || assignment.channelId}`}>
+                                        <input
+                                          type="checkbox"
+                                          checked={selected}
+                                          onChange={() => toggleStatTarget(plot.id, stat.field, targetKey)}
+                                        />
+                                      </label>
+                                    );
+                                  })}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                        )}
                         {([
                           { key: "avg", label: "Promedio", field: "statAvgTargets" },
                           { key: "min", label: "Mínimo", field: "statMinTargets" },
@@ -2737,8 +2978,8 @@ export default function App() {
                         ))}
                       </div>
 
-                      <div className="plot-menu__section">
-                        <strong>Modes</strong>
+                      <div className="plot-menu__section plot-menu__section--fold plot-menu__modes">
+                        <strong>Modos de ejes</strong>
                         <label className="checkbox-row">
                           <input
                             type="checkbox"
@@ -2866,9 +3107,9 @@ export default function App() {
                     />
                   </label>
                   <div className="modal__actions">
-                    <button type="button" onClick={saveTemplate}>Guardar como</button>
+                    <button type="button" onClick={requestSaveTemplate}>Guardar como</button>
                     <button type="button" onClick={loadTemplate} disabled={!selectedTemplateName}>Cargar</button>
-                    <button type="button" onClick={deleteTemplate} disabled={!selectedTemplateName}>Eliminar</button>
+                    <button type="button" onClick={requestDeleteTemplate} disabled={!selectedTemplateName}>Eliminar</button>
                   </div>
                   {templateMessage ? <p className="modal__hint">{templateMessage}</p> : null}
                 </div>
@@ -3148,6 +3389,44 @@ export default function App() {
                   {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {templateConfirm ? (
+        <div className="modal-backdrop modal-backdrop--top">
+          <div className="modal modal--compact">
+            <header className="modal__header">
+              <h3>
+                {templateConfirm.type === "save" ? "Confirmar guardado" : "Confirmar eliminacion"}
+              </h3>
+              <button type="button" onClick={() => setTemplateConfirm(null)}>
+                Cancelar
+              </button>
+            </header>
+            <div className="modal__body">
+              <div className="modal__form">
+                <p className="modal__hint">
+                  {templateConfirm.type === "save"
+                    ? templateConfirm.overwrites
+                      ? `La plantilla "${templateConfirm.name}" ya existe. Si continuas, se reemplazara con la configuracion actual.`
+                      : `Se guardara una nueva plantilla llamada "${templateConfirm.name}".`
+                    : `Se eliminara la plantilla "${templateConfirm.name}". Esta accion no se puede deshacer.`}
+                </p>
+                <div className="modal__actions modal__actions--end">
+                  <button type="button" onClick={() => setTemplateConfirm(null)}>
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    className={templateConfirm.type === "delete" ? "button-danger" : "button-primary"}
+                    onClick={confirmTemplateAction}
+                  >
+                    {templateConfirm.type === "save" ? "Guardar" : "Eliminar"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
