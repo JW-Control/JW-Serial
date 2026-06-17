@@ -22,7 +22,9 @@ let validFrameStreak = 0;
 let portConfig = {
   expectedChannels: 0,
   minValidFrames: 1,
-  includeTimestamp: false
+  includeTimestamp: false,
+  serialFilterMode: "none",
+  serialFilterPatterns: ""
 };
 const captureCounters = new Map();
 
@@ -33,10 +35,71 @@ const emitToRenderer = (channel, payload) => {
   mainWindow.webContents.send(channel, payload);
 };
 
+const normalizeSerialFilterPatterns = (patterns) =>
+  String(patterns || "")
+    .split(/\r?\n/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const matchesSerialFilterPattern = (line, pattern) => {
+  if (!pattern) {
+    return false;
+  }
+
+  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
+    try {
+      return new RegExp(pattern.slice(1, -1)).test(line);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  if (pattern.includes("*")) {
+    const expression = pattern
+      .split("*")
+      .map(escapeRegExp)
+      .join(".*");
+    return new RegExp(expression).test(line);
+  }
+
+  return line.startsWith(pattern);
+};
+
+const shouldAcceptSerialLine = (line) => {
+  const mode = portConfig.serialFilterMode || "none";
+  const patterns = normalizeSerialFilterPatterns(portConfig.serialFilterPatterns);
+
+  if (mode === "none" || patterns.length === 0) {
+    return true;
+  }
+
+  const matches = patterns.some((pattern) => matchesSerialFilterPattern(line, pattern));
+  return mode === "accept" ? matches : !matches;
+};
+
 const parseLine = (line) => {
   const trimmed = line.trim();
   if (!trimmed) {
     return null;
+  }
+
+  const keyValueChunks = trimmed
+    .split(/[,\t;]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const keyValuePairs = keyValueChunks
+    .map((part) => part.match(/^([^:=,\t]+)\s*[:=]\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)$/i))
+    .filter(Boolean);
+
+  if (keyValuePairs.length > 0 && keyValuePairs.length === keyValueChunks.length) {
+    return {
+      delimiter: ",",
+      names: keyValuePairs.map((match) => match[1].trim()),
+      values: keyValuePairs.map((match) => Number(match[2])),
+      raw: trimmed
+    };
   }
 
   const delimiter = trimmed.includes("\t") ? "\t" : ",";
@@ -173,6 +236,10 @@ const handleIncomingChunk = (chunk) => {
   lines.forEach((line) => {
     emitToRenderer("serial:raw-line", line);
 
+    if (!shouldAcceptSerialLine(line.trim())) {
+      return;
+    }
+
     const parsed = parseLine(line);
     if (!parsed) {
       validFrameStreak = 0;
@@ -246,7 +313,9 @@ ipcMain.handle("serial:open", async (_event, options) => {
   portConfig = {
     expectedChannels: Number(options.expectedChannels || 0),
     minValidFrames: Math.max(1, Number(options.minValidFrames || 1)),
-    includeTimestamp: Boolean(options.includeTimestamp)
+    includeTimestamp: Boolean(options.includeTimestamp),
+    serialFilterMode: options.serialFilterMode || "none",
+    serialFilterPatterns: options.serialFilterPatterns || ""
   };
 
   activePort = new SerialPort({

@@ -1,6 +1,82 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const channelPalette = ["#ef4444", "#d97706", "#c0ca33", "#65a30d", "#0ea5e9", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#64748b"];
+const virtualPalette = ["#2563eb", "#9333ea", "#0891b2", "#db2777", "#16a34a", "#ea580c"];
+
+const virtualOperations = [
+  { id: "current", label: "Actual", needsWindow: false, formula: (name) => `actual([${name}])` },
+  { id: "initial", label: "Inicial", needsWindow: true, formula: (name, windowText) => `inicial([${name}], ${windowText})` },
+  { id: "min", label: "Min", needsWindow: true, formula: (name, windowText) => `min([${name}], ${windowText})` },
+  { id: "max", label: "Max", needsWindow: true, formula: (name, windowText) => `max([${name}], ${windowText})` },
+  { id: "avg", label: "Prom", needsWindow: true, formula: (name, windowText) => `prom([${name}], ${windowText})` },
+  { id: "rangeAbs", label: "|Max-Min|", needsWindow: true, formula: (name, windowText) => `abs(max([${name}], ${windowText}) - min([${name}], ${windowText}))` },
+  { id: "delta", label: "Delta", needsWindow: true, formula: (name, windowText) => `delta([${name}], ${windowText})` },
+  { id: "slope", label: "Pend", needsWindow: true, formula: (name, windowText) => `pend([${name}], ${windowText})` },
+  { id: "std", label: "Std", needsWindow: true, formula: (name, windowText) => `std([${name}], ${windowText})` },
+  { id: "rms", label: "RMS", needsWindow: true, formula: (name, windowText) => `rms([${name}], ${windowText})` }
+];
+
+const functionBlockOperations = [
+  { id: "current", label: "Actual", kind: "window", needsWindow: false },
+  { id: "initial", label: "Inicial", kind: "window", needsWindow: true },
+  { id: "min", label: "Min", kind: "window", needsWindow: true },
+  { id: "max", label: "Max", kind: "window", needsWindow: true },
+  { id: "avg", label: "Prom", kind: "window", needsWindow: true },
+  { id: "rangeAbs", label: "|Max-Min|", kind: "window", needsWindow: true },
+  { id: "delta", label: "Delta", kind: "window", needsWindow: true },
+  { id: "slope", label: "Pend", kind: "window", needsWindow: true },
+  { id: "std", label: "Std", kind: "window", needsWindow: true },
+  { id: "rms", label: "RMS", kind: "window", needsWindow: true },
+  { id: "abs", label: "Abs", kind: "unary" },
+  { id: "sqrt", label: "Sqrt", kind: "unary" },
+  { id: "round", label: "Round", kind: "unary" },
+  { id: "add", label: "+", kind: "binary", symbol: "+" },
+  { id: "subtract", label: "-", kind: "binary", symbol: "-" },
+  { id: "multiply", label: "*", kind: "binary", symbol: "*" },
+  { id: "divide", label: "/", kind: "binary", symbol: "/" },
+  { id: "power", label: "^", kind: "binary", symbol: "^" },
+  { id: "gt", label: ">", kind: "binary", symbol: ">" },
+  { id: "lt", label: "<", kind: "binary", symbol: "<" },
+  { id: "gte", label: ">=", kind: "binary", symbol: ">=" },
+  { id: "lte", label: "<=", kind: "binary", symbol: "<=" }
+];
+
+const binaryBlockSymbols = {
+  add: "+",
+  subtract: "-",
+  multiply: "*",
+  divide: "/",
+  power: "^",
+  gt: ">",
+  lt: "<",
+  gte: ">=",
+  lte: "<="
+};
+
+const binaryExpressionFunctions = {
+  gt: "gt",
+  lt: "lt",
+  gte: "gte",
+  lte: "lte"
+};
+
+const unaryExpressionFunctions = {
+  abs: "abs",
+  sqrt: "sqrt",
+  round: "round"
+};
+
+const windowExpressionFunctions = {
+  current: "actual",
+  initial: "inicial",
+  min: "min",
+  max: "max",
+  avg: "prom",
+  delta: "delta",
+  slope: "pend",
+  std: "std",
+  rms: "rms"
+};
 
 const createDefaultChannels = (count) =>
   Array.from({ length: count }, (_, index) => ({
@@ -44,6 +120,69 @@ const defaultCaptureConfig = {
   useSubfolder: false
 };
 
+const defaultAppSettings = {
+  serialTimeoutSeconds: 10,
+  sessionRestoreMode: "ask",
+  serialFilterMode: "none",
+  serialFilterPatterns: ""
+};
+
+const appSettingsStorageKey = "jwSerialAppSettings";
+const lastSessionStorageKey = "jwSerialLastSession";
+
+const readJsonStorage = (key, fallback) => {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? { ...fallback, ...JSON.parse(saved) } : fallback;
+  } catch (_error) {
+    return fallback;
+  }
+};
+
+const normalizeSerialFilterPatterns = (patterns) =>
+  String(patterns || "")
+    .split(/\r?\n/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const matchesSerialFilterPattern = (line, pattern) => {
+  if (!pattern) {
+    return false;
+  }
+
+  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
+    try {
+      return new RegExp(pattern.slice(1, -1)).test(line);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  if (pattern.includes("*")) {
+    const expression = pattern
+      .split("*")
+      .map(escapeRegExp)
+      .join(".*");
+    return new RegExp(expression).test(line);
+  }
+
+  return line.startsWith(pattern);
+};
+
+const shouldAcceptSerialLine = (line, mode, patternsText) => {
+  const patterns = normalizeSerialFilterPatterns(patternsText);
+
+  if ((mode || "none") === "none" || patterns.length === 0) {
+    return true;
+  }
+
+  const normalizedLine = String(line || "").trim();
+  const matches = patterns.some((pattern) => matchesSerialFilterPattern(normalizedLine, pattern));
+  return mode === "accept" ? matches : !matches;
+};
+
 const commonBaudRates = [
   300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600,
   74880, 115200, 128000, 230400, 250000, 460800, 500000, 921600, 1000000,
@@ -60,6 +199,7 @@ const normalizeChannels = (count, previous) => {
 };
 
 const channelIndex = (channelId) => Number(channelId.replace("val", ""));
+const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
 
 const dashByStyle = {
   solid: "",
@@ -400,7 +540,8 @@ const downsamplePointsByPixel = (points) => {
 const buildSeries = (
   samples,
   xValues,
-  index,
+  channelId,
+  getSampleValue,
   minY,
   maxY,
   height,
@@ -416,7 +557,10 @@ const buildSeries = (
   const spreadX = maxX - minX || 1;
 
   const points = samples.map((sample, sampleIndex) => {
-    const value = sample.values[index] ?? 0;
+    const value = getSampleValue(sample, channelId);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
     const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
     const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
     return {
@@ -426,7 +570,11 @@ const buildSeries = (
         padding.bottom -
         normalizedY * (height - padding.top - padding.bottom)
     };
-  });
+  }).filter(Boolean);
+
+  if (points.length < 2) {
+    return "";
+  }
 
   const reducedPoints = downsamplePointsByPixel(points);
   return buildPath(reducedPoints);
@@ -458,6 +606,14 @@ export default function App() {
   const [plots, setPlots] = useState(defaultPlots);
   const [plotDrafts, setPlotDrafts] = useState({});
   const [channels, setChannels] = useState(createDefaultChannels(10));
+  const [virtualFunctions, setVirtualFunctions] = useState([]);
+  const [functionDraft, setFunctionDraft] = useState(null);
+  const [functionMessage, setFunctionMessage] = useState("");
+  const [functionModalWidth, setFunctionModalWidth] = useState(() => {
+    const savedWidth = Number(localStorage.getItem("jwSerialFunctionModalWidth"));
+    return Number.isFinite(savedWidth) && savedWidth >= 760 ? savedWidth : 920;
+  });
+  const functionModalRef = useRef(null);
   const [activeTab, setActiveTab] = useState("plotter");
   const [modal, setModal] = useState(null);
   const [terminator, setTerminator] = useState("none");
@@ -469,6 +625,9 @@ export default function App() {
   const [baudRate, setBaudRate] = useState(115200);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isPaused, setIsPaused] = useState(false);
+  const [appSettings, setAppSettings] = useState(() =>
+    readJsonStorage(appSettingsStorageKey, defaultAppSettings)
+  );
   const [configText, setConfigText] = useState("");
   const [configMessage, setConfigMessage] = useState("");
   const [templateName, setTemplateName] = useState("");
@@ -486,6 +645,8 @@ export default function App() {
   const [axisDrag, setAxisDrag] = useState(null);
   const [plotWidths, setPlotWidths] = useState({});
   const [assignmentPrompt, setAssignmentPrompt] = useState(null);
+  const [startupRestorePrompt, setStartupRestorePrompt] = useState(null);
+  const [connectIdentifierPrompt, setConnectIdentifierPrompt] = useState(null);
   const [captureConfig, setCaptureConfig] = useState(() => {
     try {
       const saved = localStorage.getItem("jwSerialCaptureConfig");
@@ -506,7 +667,10 @@ export default function App() {
   const captureInProgressRef = useRef(false);
   const y2FollowStateRef = useRef(new Map());
   const historyRef = useRef([]);
+  const virtualFunctionsRef = useRef([]);
   const rxTimesRef = useRef([]);
+  const lastValidFrameAtRef = useRef(null);
+  const restoreReadyRef = useRef(false);
 
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
@@ -525,10 +689,21 @@ export default function App() {
     stopBits: 1
   });
 
+  const persistFunctionModalWidth = (width) => {
+    const maxWidth = Math.round(window.innerWidth * 0.96);
+    const minWidth = Math.min(760, maxWidth);
+    const clampedWidth = Math.min(Math.max(Math.round(width), minWidth), maxWidth);
+    setFunctionModalWidth(clampedWidth);
+    localStorage.setItem("jwSerialFunctionModalWidth", String(clampedWidth));
+  };
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("jwSerialTheme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    virtualFunctionsRef.current = virtualFunctions;
+  }, [virtualFunctions]);
 
   const visibleChannels = useMemo(() => {
     if (basicConfig.channelCount <= 0) {
@@ -536,6 +711,40 @@ export default function App() {
     }
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
+
+  const virtualChannels = useMemo(() =>
+    virtualFunctions
+      .filter((item) => item.enabled !== false)
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        color: item.color,
+        lineStyle: item.lineStyle || "solid",
+        thickness: item.thickness || 2,
+        value: Number(item.value || 0),
+        virtual: true
+      })),
+    [virtualFunctions]
+  );
+
+  const allChannels = useMemo(() => [...visibleChannels, ...virtualChannels], [visibleChannels, virtualChannels]);
+
+  const virtualFunctionSnapshotKey = useMemo(() =>
+    JSON.stringify(virtualFunctions.map(({ value: _value, ...definition }) => definition)),
+    [virtualFunctions]
+  );
+
+  const getChannelById = (channelId) => allChannels.find((channel) => channel.id === channelId);
+
+  const getSampleValue = (sample, channelId) => {
+    if (!sample || !channelId) {
+      return undefined;
+    }
+    if (isPhysicalChannelId(channelId)) {
+      return sample.values?.[channelIndex(channelId)];
+    }
+    return sample.virtualValues?.[channelId];
+  };
 
   const isSerialConnected = connectionStatus === "connected";
 
@@ -570,14 +779,32 @@ export default function App() {
   const buildConfigSnapshot = () => ({
     basicConfig,
     advancedConfig,
+    appSettings,
     baudRate,
     selectedPort,
+    manualPort,
+    terminator,
+    activeTab,
     channels: channels.map(({ id, name, color, lineStyle, thickness }) => ({
       id,
       name,
       color,
       lineStyle,
       thickness
+    })),
+    virtualFunctions: virtualFunctions.map(({ id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled }) => ({
+      id,
+      name,
+      sourceId,
+      operation,
+      expression,
+      block,
+      windowUnit,
+      windowValue,
+      color,
+      lineStyle,
+      thickness,
+      enabled
     })),
     plots,
     captureConfig
@@ -664,6 +891,449 @@ export default function App() {
     );
   };
 
+  const updateVirtualFunction = (functionId, patch) => {
+    setVirtualFunctions((prev) =>
+      prev.map((item) => (item.id === functionId ? { ...item, ...patch } : item))
+    );
+  };
+
+  const parseFunctionWindow = (windowArg, fallbackDefinition = null) => {
+    if (typeof windowArg === "string") {
+      const match = windowArg.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(s|seg|segundos|m|muestras|n)?$/);
+      if (match) {
+        return {
+          value: Math.max(1, Number(match[1]) || 1),
+          unit: ["s", "seg", "segundos"].includes(match[2]) ? "seconds" : "samples"
+        };
+      }
+    }
+
+    if (Number.isFinite(Number(windowArg))) {
+      return { value: Math.max(1, Number(windowArg) || 1), unit: "samples" };
+    }
+
+    return {
+      value: Math.max(1, Number(fallbackDefinition?.windowValue) || 1),
+      unit: fallbackDefinition?.windowUnit || "samples"
+    };
+  };
+
+  const getFunctionWindowSize = (definition, windowArg = null) => {
+    const parsedWindow = windowArg === null
+      ? { value: Math.max(1, Number(definition.windowValue) || 1), unit: definition.windowUnit }
+      : parseFunctionWindow(windowArg, definition);
+    if (parsedWindow.unit === "seconds") {
+      return Math.max(1, Math.round(parsedWindow.value * Math.max(1, Number(basicConfig.samplesPerSecond) || 1)));
+    }
+    return Math.max(1, Math.round(parsedWindow.value));
+  };
+
+  const getFunctionWindowLabel = (definition) => {
+    const windowValue = Math.max(1, Number(definition.windowValue) || 1);
+    if (definition.windowUnit === "seconds") {
+      return `${windowValue}s`;
+    }
+    return `${windowValue}m`;
+  };
+  const createFunctionBlock = (type = "rangeAbs", sourceId = null) => {
+    const baseWindow = {
+      type,
+      sourceId,
+      windowUnit: "seconds",
+      windowValue: 200
+    };
+
+    if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms"].includes(type)) {
+      return baseWindow;
+    }
+    if (["abs", "sqrt", "round"].includes(type)) {
+      return { type, input: null };
+    }
+    if (binaryBlockSymbols[type]) {
+      return {
+        type,
+        left: null,
+        right: null
+      };
+    }
+    if (type === "number") {
+      return { type: "number", value: 0 };
+    }
+    if (type === "variable") {
+      return { type: "variable", sourceId };
+    }
+    return { type: "current", sourceId };
+  };
+
+  const getBlockWindowLabel = (block) => {
+    const windowValue = Math.max(1, Number(block?.windowValue) || 1);
+    return block?.windowUnit === "seconds" ? `${windowValue}s` : `${windowValue}m`;
+  };
+
+  const getBlockChannelName = (sourceId) =>
+    visibleChannels.find((channel) => channel.id === sourceId)?.name || "variable";
+
+  const blockToExpression = (block) => {
+    if (!block) {
+      return "";
+    }
+
+    if (block.type === "number") {
+      return String(Number(block.value) || 0);
+    }
+
+    if (block.type === "variable") {
+      return block.sourceId ? `actual([${getBlockChannelName(block.sourceId)}])` : "";
+    }
+
+    if (unaryExpressionFunctions[block.type]) {
+      return `${unaryExpressionFunctions[block.type]}(${blockToExpression(block.input)})`;
+    }
+
+    if (binaryExpressionFunctions[block.type]) {
+      return `${binaryExpressionFunctions[block.type]}(${blockToExpression(block.left)}, ${blockToExpression(block.right)})`;
+    }
+
+    if (binaryBlockSymbols[block.type]) {
+      return `(${blockToExpression(block.left)} ${binaryBlockSymbols[block.type]} ${blockToExpression(block.right)})`;
+    }
+
+    const channelName = block.sourceId ? getBlockChannelName(block.sourceId) : "";
+    const variableText = channelName ? `[${channelName}]` : "";
+    const windowText = getBlockWindowLabel(block);
+
+    if (block.type === "rangeAbs") {
+      return `abs(max(${variableText}, ${windowText}) - min(${variableText}, ${windowText}))`;
+    }
+
+    if (windowExpressionFunctions[block.type]) {
+      const fnName = windowExpressionFunctions[block.type];
+      return block.type === "current" ? `${fnName}(${variableText})` : `${fnName}(${variableText}, ${windowText})`;
+    }
+
+    return `actual(${variableText})`;
+  };
+
+  const validateFunctionBlock = (block) => {
+    if (!block) {
+      return "Arma un bloque principal.";
+    }
+    if (block.type === "number") {
+      return Number.isFinite(Number(block.value)) ? "" : "Un bloque numérico tiene un valor inválido.";
+    }
+    if (block.type === "variable") {
+      return visibleChannels.some((channel) => channel.id === block.sourceId) ? "" : "Selecciona una variable física válida.";
+    }
+    if (unaryExpressionFunctions[block.type]) {
+      return validateFunctionBlock(block.input);
+    }
+    if (binaryBlockSymbols[block.type]) {
+      return validateFunctionBlock(block.left) || validateFunctionBlock(block.right);
+    }
+    if (!visibleChannels.some((channel) => channel.id === block.sourceId)) {
+      return "Selecciona una variable física válida.";
+    }
+    const operation = functionBlockOperations.find((item) => item.id === block.type);
+    if (operation?.needsWindow && (!Number.isFinite(Number(block.windowValue)) || Number(block.windowValue) <= 0)) {
+      return "La ventana debe ser mayor a 0.";
+    }
+    return "";
+  };
+
+  const draftExpression = (definition) =>
+    definition?.block ? blockToExpression(definition.block) : normalizeFunctionExpression(definition);
+
+
+  const getWindowValuesForChannel = (channelId, samples = historyRef.current, windowArg = null, definition = null) => {
+    const selectedSamples = samples.slice(-getFunctionWindowSize(definition || {}, windowArg));
+    return selectedSamples
+      .map((sample) => getSampleValue(sample, channelId))
+      .filter((value) => Number.isFinite(value));
+  };
+
+  const buildFunctionFormula = (definition) => {
+    if (definition?.block) {
+      return blockToExpression(definition.block);
+    }
+    const source = visibleChannels.find((channel) => channel.id === definition.sourceId);
+    const operation = virtualOperations.find((item) => item.id === definition.operation) || virtualOperations[0];
+    const windowText = getFunctionWindowLabel(definition);
+    return operation.formula(source?.name || "variable", windowText);
+  };
+
+  const normalizeFunctionExpression = (definition) =>
+    (definition.expression || buildFunctionFormula(definition)).trim();
+
+  const insertFunctionText = (text) => {
+    setFunctionDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const expression = normalizeFunctionExpression(prev);
+      return {
+        ...prev,
+        expression: `${expression}${expression ? " " : ""}${text}`
+      };
+    });
+    setFunctionMessage("");
+  };
+
+  const expressionToJs = (definition) => {
+    let expression = draftExpression(definition);
+    const channelsByName = new Map(visibleChannels.map((channel) => [channel.name, channel.id]));
+    expression = expression.replace(/\[([^\]]+)\]/g, (_match, name) => {
+      const channelId = channelsByName.get(name.trim());
+      if (!channelId) {
+        throw new Error(`Variable no encontrada: ${name}`);
+      }
+      return `token("${channelId}")`;
+    });
+    expression = expression.replace(/\b(\d+(?:\.\d+)?)\s*(s|seg|segundos|m|muestras|n)\b/gi, (_match, value, unit) =>
+      `"${value}${unit.toLowerCase().startsWith("s") ? "s" : "m"}"`
+    );
+    expression = expression.replace(/\^/g, "**");
+
+    if (!/^[\d\s+\-*/().,"_*A-Za-z]+$/.test(expression)) {
+      throw new Error("La fórmula contiene caracteres no permitidos.");
+    }
+
+    const expressionWithoutStrings = expression.replace(/"[^"]*"/g, "");
+    const names = expressionWithoutStrings.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    const allowedNames = new Set(["token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte"]);
+    const invalidName = names.find((name) => !allowedNames.has(name));
+    if (invalidName) {
+      throw new Error(`Función no permitida: ${invalidName}`);
+    }
+
+    return expression;
+  };
+
+  const evaluateVirtualFunction = (definition, samples = historyRef.current) => {
+    const expression = expressionToJs(definition);
+    const evaluator = new Function("token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", `"use strict"; return (${expression});`);
+
+    if (!samples.length) {
+      return undefined;
+    }
+
+    const currentValue = (channelId) => getSampleValue(samples[samples.length - 1], channelId);
+    const token = (channelId) => ({
+      channelId,
+      valueOf: () => {
+        const value = currentValue(channelId);
+        return Number.isFinite(value) ? value : Number.NaN;
+      },
+      toString: () => String(currentValue(channelId) ?? "")
+    });
+    const tokenId = (input) => input?.channelId || null;
+    const valuesFor = (input, windowArg) => {
+      const channelId = tokenId(input);
+      if (!channelId) {
+        const value = Number(input);
+        return Number.isFinite(value) ? [value] : [];
+      }
+      return getWindowValuesForChannel(channelId, samples, windowArg, definition);
+    };
+    const actual = (input) => {
+      const channelId = tokenId(input);
+      if (!channelId) {
+        return Number(input);
+      }
+      const value = currentValue(channelId);
+      return Number.isFinite(value) ? value : Number.NaN;
+    };
+    const inicial = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length ? values[0] : Number.NaN;
+    };
+    const min = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length ? Math.min(...values) : Number.NaN;
+    };
+    const max = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length ? Math.max(...values) : Number.NaN;
+    };
+    const prom = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : Number.NaN;
+    };
+    const delta = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length >= 2 ? values[values.length - 1] - values[0] : Number.NaN;
+    };
+    const pend = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (values.length < 2) {
+        return Number.NaN;
+      }
+      const parsedWindow = parseFunctionWindow(windowArg, definition);
+      const span = parsedWindow.unit === "seconds" ? Math.max(Number.EPSILON, parsedWindow.value) : Math.max(1, values.length - 1);
+      return (values[values.length - 1] - values[0]) / span;
+    };
+    const std = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (!values.length) {
+        return Number.NaN;
+      }
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+      return Math.sqrt(variance);
+    };
+    const rms = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      return values.length ? Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0) / values.length) : Number.NaN;
+    };
+    const gt = (left, right) => (Number(left) > Number(right) ? 1 : 0);
+    const lt = (left, right) => (Number(left) < Number(right) ? 1 : 0);
+    const gte = (left, right) => (Number(left) >= Number(right) ? 1 : 0);
+    const lte = (left, right) => (Number(left) <= Number(right) ? 1 : 0);
+    const result = evaluator(token, actual, inicial, min, max, prom, Math.abs, Math.sqrt, Math.round, delta, pend, std, rms, gt, lt, gte, lte);
+    return Number.isFinite(Number(result)) ? Number(result) : undefined;
+  };
+
+  const recomputeVirtualFunctionHistory = (definitions = virtualFunctionsRef.current) => {
+    const activeDefinitions = definitions.filter((definition) => definition.enabled !== false);
+    if (!historyRef.current.length) {
+      return {};
+    }
+
+    if (!activeDefinitions.length) {
+      historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: {} }));
+      return {};
+    }
+
+    const sourceHistory = historyRef.current;
+    const latestValues = {};
+    historyRef.current = sourceHistory.map((sample, index) => {
+      const samplesUntilNow = sourceHistory.slice(0, index + 1);
+      const virtualValues = {};
+      activeDefinitions.forEach((definition) => {
+        const value = evaluateVirtualFunction(definition, samplesUntilNow);
+        if (Number.isFinite(value)) {
+          const rounded = Number(value.toFixed(6));
+          virtualValues[definition.id] = rounded;
+          if (index === sourceHistory.length - 1) {
+            latestValues[definition.id] = rounded;
+          }
+        }
+      });
+      return { ...sample, virtualValues };
+    });
+
+    return latestValues;
+  };
+
+  useEffect(() => {
+    if (!historyRef.current.length) {
+      return;
+    }
+
+    const latestValues = recomputeVirtualFunctionHistory(virtualFunctionsRef.current);
+    setVirtualFunctions((prev) => {
+      if (!prev.length) {
+        return prev;
+      }
+      return prev.map((definition) => ({
+        ...definition,
+        value: Number.isFinite(latestValues[definition.id])
+          ? latestValues[definition.id]
+          : definition.value || 0
+      }));
+    });
+    setDataVersion((prev) => prev + 1);
+  }, [virtualFunctionSnapshotKey]);
+
+  const validateFunctionDraft = (draft = functionDraft) => {
+    if (!draft) {
+      return "No hay función para validar.";
+    }
+    if (!draft.name?.trim()) {
+      return "Escribe un nombre para la función.";
+    }
+    const blockError = draft.block ? validateFunctionBlock(draft.block) : "";
+    if (blockError) {
+      return blockError;
+    }
+    if (!draftExpression(draft)) {
+      return "Arma una función.";
+    }
+    try {
+      expressionToJs(draft);
+      evaluateVirtualFunction(draft, historyRef.current);
+    } catch (error) {
+      return String(error?.message || error || "Sintaxis inválida.");
+    }
+    return "";
+  };
+
+  const openFunctionBuilder = (definition = null) => {
+    const firstSource = visibleChannels[0]?.id || "val0";
+    const defaultBlock = createFunctionBlock("rangeAbs", firstSource);
+    setFunctionDraft(definition ? {
+      ...definition,
+      block: definition.block || defaultBlock,
+      expression: definition.block ? blockToExpression(definition.block) : draftExpression(definition)
+    } : {
+      id: `fn-${Date.now()}`,
+      name: "Nueva función",
+      sourceId: firstSource,
+      operation: "rangeAbs",
+      block: null,
+      expression: "",
+      windowUnit: "seconds",
+      windowValue: 200,
+      color: virtualPalette[virtualFunctions.length % virtualPalette.length],
+      lineStyle: "solid",
+      thickness: 2,
+      enabled: true,
+      value: 0
+    });
+    setFunctionMessage("");
+    setModal("function");
+  };
+
+  const saveFunctionDraft = () => {
+    const error = validateFunctionDraft();
+    if (error) {
+      setFunctionMessage(error);
+      return;
+    }
+    const sanitized = {
+      ...functionDraft,
+      name: functionDraft.name.trim(),
+      expression: draftExpression(functionDraft),
+      windowValue: Math.max(1, Number(functionDraft.windowValue) || 1),
+      enabled: true
+    };
+    const nextValue = evaluateVirtualFunction(sanitized);
+    setVirtualFunctions((prev) => {
+      const exists = prev.some((item) => item.id === sanitized.id);
+      const next = { ...sanitized, value: Number.isFinite(nextValue) ? Number(nextValue.toFixed(6)) : sanitized.value || 0 };
+      return exists ? prev.map((item) => (item.id === sanitized.id ? next : item)) : [...prev, next];
+    });
+    setFunctionMessage(`Función guardada: ${sanitized.name}`);
+    setFunctionDraft(null);
+    setModal(null);
+  };
+
+  const deleteFunction = (functionId) => {
+    setVirtualFunctions((prev) => prev.filter((item) => item.id !== functionId));
+    setPlots((prev) =>
+      prev.map((plot) => ({
+        ...plot,
+        assignments: plot.assignments.filter((assignment) => assignment.channelId !== functionId),
+        statAvgTargets: (plot.statAvgTargets || []).filter((key) => !key.startsWith(`${functionId}:`)),
+        statMinTargets: (plot.statMinTargets || []).filter((key) => !key.startsWith(`${functionId}:`)),
+        statMaxTargets: (plot.statMaxTargets || []).filter((key) => !key.startsWith(`${functionId}:`))
+      }))
+    );
+    if (functionDraft?.id === functionId) {
+      setFunctionDraft(null);
+      setModal(null);
+    }
+  };
+
   const updatePlotSettings = (plotId, patch) => {
     setPlots((prev) =>
       prev.map((plot) => (plot.id === plotId ? { ...plot, ...patch } : plot))
@@ -674,6 +1344,14 @@ export default function App() {
     setCaptureConfig((prev) => {
       const next = { ...prev, ...patch };
       localStorage.setItem("jwSerialCaptureConfig", JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const updateAppSettings = (patch) => {
+    setAppSettings((prev) => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem(appSettingsStorageKey, JSON.stringify(next));
       return next;
     });
   };
@@ -836,23 +1514,45 @@ export default function App() {
     return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
   };
 
+  const getPlotXValue = (plot, sample, index) => {
+    const xAssignment = plot.assignments.find((item) => item.axis === "x");
+    if (xAssignment) {
+      const value = getSampleValue(sample, xAssignment.channelId);
+      return Number.isFinite(value) ? value : index;
+    }
+    if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
+      return sample.xValue;
+    }
+    return index;
+  };
+
+  const getVisibleSamplesForPlot = (plot, samples = getSamplesForPlot(plot)) => {
+    if (plot.xMode !== "manual") {
+      return samples;
+    }
+
+    const xMin = Math.min(Number(plot.xManualMin), Number(plot.xManualMax));
+    const xMax = Math.max(Number(plot.xManualMin), Number(plot.xManualMax));
+    if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) {
+      return samples;
+    }
+
+    const visibleSamples = samples.filter((sample, index) => {
+      const xValue = getPlotXValue(plot, sample, index);
+      return Number.isFinite(xValue) && xValue >= xMin && xValue <= xMax;
+    });
+    return visibleSamples.length ? visibleSamples : samples;
+  };
+
   const computeAxisAutoRange = (plot, axis) => {
-    const samples = getSamplesForPlot(plot);
+    const baseSamples = getSamplesForPlot(plot);
+    const samples = axis === "x" ? baseSamples : getVisibleSamplesForPlot(plot, baseSamples);
     if (samples.length < 2) {
       return null;
     }
 
     if (axis === "x") {
-      const xAssignment = plot.assignments.find((item) => item.axis === "x");
-      const xValues = samples.map((sample, index) => {
-        if (xAssignment) {
-          return sample.values[channelIndex(xAssignment.channelId)] ?? index;
-        }
-        if (basicConfig.includeTimestamp && sample.xValue !== null) {
-          return sample.xValue;
-        }
-        return index;
-      });
+      const xValues = samples.map((sample, index) => getPlotXValue(plot, sample, index));
 
       return findFiniteRange(xValues);
     }
@@ -865,9 +1565,8 @@ export default function App() {
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
     axisAssignments.forEach((assignment) => {
-      const idx = channelIndex(assignment.channelId);
       samples.forEach((sample) => {
-        const value = sample.values[idx];
+        const value = getSampleValue(sample, assignment.channelId);
         if (value === undefined) {
           return;
         }
@@ -1110,7 +1809,7 @@ export default function App() {
   };
 
   const handleChannelDragStart = (event, channelId) => {
-    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("text/plain", channelId);
     event.dataTransfer.setData("application/x-jw-channel", channelId);
   };
@@ -1146,7 +1845,7 @@ export default function App() {
       return;
     }
 
-    const channel = channels.find((item) => item.id === channelId);
+    const channel = getChannelById(channelId);
     setAssignmentPrompt({
       plotId,
       channelId,
@@ -1248,6 +1947,8 @@ export default function App() {
 
   const closeModal = () => {
     setTemplateConfirm(null);
+    setFunctionDraft(null);
+    setFunctionMessage("");
     setModal(null);
   };
 
@@ -1317,7 +2018,7 @@ export default function App() {
     }
   };
 
-  const handleConnect = async () => {
+  const openSerialConnection = async () => {
     const targetPort = selectedPort || manualPort.trim();
     if (!targetPort) {
       appendLog("SYS > Selecciona o ingresa un puerto antes de conectar.");
@@ -1334,8 +2035,11 @@ export default function App() {
         stopBits: advancedConfig.stopBits,
         expectedChannels: basicConfig.channelCount,
         minValidFrames: basicConfig.minValidFrames,
-        includeTimestamp: basicConfig.includeTimestamp
+        includeTimestamp: basicConfig.includeTimestamp,
+        serialFilterMode: appSettings.serialFilterMode,
+        serialFilterPatterns: appSettings.serialFilterPatterns
       });
+      lastValidFrameAtRef.current = Date.now();
       setConnectionStatus("connected");
       appendSessionEvent("connect", `Conectado a ${targetPort}`);
     } catch (_error) {
@@ -1343,10 +2047,30 @@ export default function App() {
     }
   };
 
+  const handleConnect = async () => {
+    if (captureConfig.usePrefix) {
+      setConnectIdentifierPrompt(captureConfig.label || "");
+      return;
+    }
+    openSerialConnection();
+  };
+
+  const confirmConnectIdentifier = () => {
+    const label = connectIdentifierPrompt.trim();
+    if (!label) {
+      setCaptureMessage("Ingresa un identificador antes de conectar.");
+      return;
+    }
+    updateCaptureConfig({ label });
+    setConnectIdentifierPrompt(null);
+    window.setTimeout(() => openSerialConnection(), 0);
+  };
+
   const handleDisconnect = async () => {
     appendSessionEvent("disconnect", "Desconexión solicitada");
     await window.jwSerial.closePort();
     setConnectionStatus("disconnected");
+    lastValidFrameAtRef.current = null;
   };
 
   const clearBuffer = () => {
@@ -1356,6 +2080,7 @@ export default function App() {
     setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
     setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
+    setVirtualFunctions((prev) => prev.map((item) => ({ ...item, value: 0 })));
   };
 
   const exportCsv = () => {
@@ -1363,8 +2088,13 @@ export default function App() {
       return;
     }
 
-    const header = ["timestamp", "xValue", ...channels.map((channel) => channel.name)];
-    const rows = historyRef.current.map((item) => [item.timestamp, item.xValue, ...item.values]);
+    const header = ["timestamp", "xValue", ...visibleChannels.map((channel) => channel.name), ...virtualChannels.map((channel) => channel.name)];
+    const rows = historyRef.current.map((item) => [
+      item.timestamp,
+      item.xValue,
+      ...visibleChannels.map((channel) => getSampleValue(item, channel.id) ?? ""),
+      ...virtualChannels.map((channel) => getSampleValue(item, channel.id) ?? "")
+    ]);
     const csv = [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1483,10 +2213,10 @@ export default function App() {
       }
     } catch (error) {
       if (isMissingIpcHandlerError(error)) {
-        setConfigMessage("Reinicia JW-Serial para activar el dialogo nativo de guardado.");
+        setConfigMessage("Reinicia JW-Serial para activar el diálogo nativo de guardado.");
         return;
       }
-      setConfigMessage("No se pudo abrir el dialogo de guardado.");
+      setConfigMessage("No se pudo abrir el diálogo de guardado.");
       return;
     }
     setConfigMessage("Configuración guardada localmente.");
@@ -1507,10 +2237,10 @@ export default function App() {
       }
     } catch (error) {
       if (isMissingIpcHandlerError(error)) {
-        setConfigMessage("Reinicia JW-Serial para activar el dialogo nativo de carga.");
+        setConfigMessage("Reinicia JW-Serial para activar el diálogo nativo de carga.");
         return;
       }
-      setConfigMessage("No se pudo abrir el dialogo de carga.");
+      setConfigMessage("No se pudo abrir el diálogo de carga.");
       return;
     }
     const saved = localStorage.getItem("jwSerialConfig");
@@ -1533,11 +2263,23 @@ export default function App() {
       if (parsed.advancedConfig) {
         setAdvancedConfig(parsed.advancedConfig);
       }
+      if (parsed.appSettings) {
+        updateAppSettings(parsed.appSettings);
+      }
       if (parsed.baudRate) {
         setBaudRate(parsed.baudRate);
       }
       if (parsed.selectedPort) {
         setSelectedPort(parsed.selectedPort);
+      }
+      if (parsed.manualPort) {
+        setManualPort(parsed.manualPort);
+      }
+      if (parsed.terminator) {
+        setTerminator(parsed.terminator);
+      }
+      if (parsed.activeTab) {
+        setActiveTab(parsed.activeTab);
       }
       if (parsed.plots) {
         setPlots(parsed.plots);
@@ -1550,6 +2292,9 @@ export default function App() {
           ? nextBasicConfig.channelCount
           : parsed.channels.length;
         setChannels(normalizeChannels(preferredCount, parsed.channels));
+      }
+      if (Array.isArray(parsed.virtualFunctions)) {
+        setVirtualFunctions(parsed.virtualFunctions.map((item) => ({ ...item, expression: item.expression || buildFunctionFormula(item), value: item.value || 0 })));
       }
       setConfigMessage("Configuración aplicada.");
     } catch (_error) {
@@ -1565,11 +2310,23 @@ export default function App() {
     if (parsed.advancedConfig) {
       setAdvancedConfig(parsed.advancedConfig);
     }
+    if (parsed.appSettings) {
+      updateAppSettings(parsed.appSettings);
+    }
     if (parsed.baudRate) {
       setBaudRate(parsed.baudRate);
     }
     if (parsed.selectedPort) {
       setSelectedPort(parsed.selectedPort);
+    }
+    if (parsed.manualPort) {
+      setManualPort(parsed.manualPort);
+    }
+    if (parsed.terminator) {
+      setTerminator(parsed.terminator);
+    }
+    if (parsed.activeTab) {
+      setActiveTab(parsed.activeTab);
     }
     if (parsed.plots) {
       setPlots(parsed.plots);
@@ -1583,13 +2340,44 @@ export default function App() {
         : parsed.channels.length;
       setChannels(normalizeChannels(preferredCount, parsed.channels));
     }
+    if (Array.isArray(parsed.virtualFunctions)) {
+      setVirtualFunctions(parsed.virtualFunctions.map((item) => ({ ...item, expression: item.expression || buildFunctionFormula(item), value: item.value || 0 })));
+    }
+  };
+
+  const readLastSessionSnapshot = () => {
+    try {
+      const saved = localStorage.getItem(lastSessionStorageKey);
+      return saved ? JSON.parse(saved) : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const loadLastSession = (snapshot = readLastSessionSnapshot()) => {
+    if (!snapshot) {
+      restoreReadyRef.current = true;
+      setStartupRestorePrompt(null);
+      return;
+    }
+    applyConfigSnapshot(snapshot);
+    restoreReadyRef.current = true;
+    setStartupRestorePrompt(null);
+    setConfigMessage("Última sesión cargada.");
+  };
+
+  const startEmptySession = () => {
+    localStorage.removeItem(lastSessionStorageKey);
+    restoreReadyRef.current = true;
+    setStartupRestorePrompt(null);
+    setConfigMessage("Sesión nueva iniciada.");
   };
 
   const chooseCaptureDirectory = async () => {
     try {
       const response = await window.jwSerial?.chooseCaptureDirectory?.();
       if (!response?.ok) {
-        setCaptureMessage(response?.canceled ? "Seleccion cancelada." : "No se pudo elegir carpeta.");
+        setCaptureMessage(response?.canceled ? "Selección cancelada." : "No se pudo elegir carpeta.");
         return;
       }
       updateCaptureConfig({ directory: response.directory });
@@ -1825,6 +2613,33 @@ export default function App() {
   }, [captureConfig]);
 
   useEffect(() => {
+    const snapshot = readLastSessionSnapshot();
+    if (!snapshot) {
+      restoreReadyRef.current = true;
+      return;
+    }
+
+    if (appSettings.sessionRestoreMode === "auto") {
+      loadLastSession(snapshot);
+      return;
+    }
+
+    if (appSettings.sessionRestoreMode === "fresh") {
+      restoreReadyRef.current = true;
+      return;
+    }
+
+    setStartupRestorePrompt(snapshot);
+  }, []);
+
+  useEffect(() => {
+    if (!restoreReadyRef.current) {
+      return;
+    }
+    localStorage.setItem(lastSessionStorageKey, JSON.stringify(buildConfigSnapshot()));
+  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, channels, virtualFunctionSnapshotKey, plots, captureConfig]);
+
+  useEffect(() => {
     resetCaptureTimer();
   }, [captureConfig.enabled, captureConfig.directory, captureConfig.intervalMinutes, connectionStatus]);
 
@@ -1859,6 +2674,11 @@ export default function App() {
     }
 
     const unsubscribeFrame = window.jwSerial.onFrame((frame) => {
+      if (!shouldAcceptSerialLine(frame.raw, appSettings.serialFilterMode, appSettings.serialFilterPatterns)) {
+        return;
+      }
+
+      lastValidFrameAtRef.current = Date.now();
       if (isPaused) {
         return;
       }
@@ -1872,6 +2692,7 @@ export default function App() {
         const normalized = normalizeChannels(channelCount, prev);
         return normalized.map((channel, index) => ({
           ...channel,
+          name: frame.names?.[index] || channel.name,
           value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
         }));
       });
@@ -1880,11 +2701,32 @@ export default function App() {
         1,
         Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
       );
-      historyRef.current.push({
+      const historyEntry = {
         timestamp: frame.timestamp,
         xValue,
-        values: incomingValues.slice(0, channelCount)
-      });
+        values: incomingValues.slice(0, channelCount),
+        virtualValues: {}
+      };
+      historyRef.current.push(historyEntry);
+      const activeVirtualFunctions = virtualFunctionsRef.current;
+      if (activeVirtualFunctions.length) {
+        const nextVirtualValues = {};
+        activeVirtualFunctions.forEach((definition) => {
+          const value = evaluateVirtualFunction(definition, historyRef.current);
+          if (Number.isFinite(value)) {
+            nextVirtualValues[definition.id] = Number(value.toFixed(6));
+          }
+        });
+        historyEntry.virtualValues = nextVirtualValues;
+        setVirtualFunctions((prev) =>
+          prev.map((definition) => ({
+            ...definition,
+            value: Number.isFinite(nextVirtualValues[definition.id])
+              ? nextVirtualValues[definition.id]
+              : definition.value || 0
+          }))
+        );
+      }
       updateReceiveStats(frame.timestamp);
       if (historyRef.current.length > maxSamples) {
         historyRef.current = historyRef.current.slice(-maxSamples);
@@ -1905,9 +2747,11 @@ export default function App() {
       }
       if (status.type === "closed") {
         setConnectionStatus("disconnected");
+        lastValidFrameAtRef.current = null;
       }
       if (status.type === "open") {
         setConnectionStatus("connected");
+        lastValidFrameAtRef.current = Date.now();
       }
       appendLog(`SYS > ${status.message}`);
     });
@@ -1917,7 +2761,37 @@ export default function App() {
       unsubscribeRaw?.();
       unsubscribeStatus?.();
     };
-  }, [basicConfig, isPaused]);
+  }, [basicConfig, isPaused, appSettings.serialFilterMode, appSettings.serialFilterPatterns]);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") {
+      return undefined;
+    }
+
+    const timeoutSeconds = Number(appSettings.serialTimeoutSeconds) || 0;
+    if (timeoutSeconds <= 0) {
+      return undefined;
+    }
+
+    const watchdog = window.setInterval(async () => {
+      const lastValidFrameAt = lastValidFrameAtRef.current || 0;
+      if (Date.now() - lastValidFrameAt < timeoutSeconds * 1000) {
+        return;
+      }
+
+      appendLog(`SYS > Timeout serial: ${timeoutSeconds} s sin trama válida. Desconectando.`);
+      appendSessionEvent("timeout_disconnect", `${timeoutSeconds} s sin trama válida`);
+      lastValidFrameAtRef.current = null;
+      try {
+        await window.jwSerial?.closePort?.();
+      } catch (_error) {
+        // The status listener will handle normal close notifications.
+      }
+      setConnectionStatus("disconnected");
+    }, 1000);
+
+    return () => window.clearInterval(watchdog);
+  }, [connectionStatus, appSettings.serialTimeoutSeconds]);
 
   useEffect(() => {
     if (basicConfig.channelCount > 0) {
@@ -2004,16 +2878,8 @@ export default function App() {
     const padding = { top: 20, right: 74, bottom: 40, left: 74 };
     const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
 
-    const xAssignment = plot.assignments.find((item) => item.axis === "x");
-    const xValues = samples.map((sample, index) => {
-      if (xAssignment) {
-        return sample.values[channelIndex(xAssignment.channelId)] ?? index;
-      }
-      if (basicConfig.includeTimestamp && sample.xValue !== null) {
-        return sample.xValue;
-      }
-      return index;
-    });
+    const xValues = samples.map((sample, index) => getPlotXValue(plot, sample, index));
+    const yScaleSamples = getVisibleSamplesForPlot(plot, samples);
 
     const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
     const hasRenderableData = samples.length >= 2 && plot.assignments.length > 0 && yAssignments.length > 0;
@@ -2026,9 +2892,8 @@ export default function App() {
     };
 
     yAssignments.forEach((assignment) => {
-      const idx = channelIndex(assignment.channelId);
-      samples.forEach((sample) => {
-        const value = sample.values[idx];
+      yScaleSamples.forEach((sample) => {
+        const value = getSampleValue(sample, assignment.channelId);
         if (value === undefined) {
           return;
         }
@@ -2141,7 +3006,6 @@ export default function App() {
 
     const lines = hasRenderableData
       ? yAssignments.map((assignment) => {
-        const idx = channelIndex(assignment.channelId);
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
@@ -2150,7 +3014,8 @@ export default function App() {
         const path = buildSeries(
           samples,
           xValues,
-          idx,
+          assignment.channelId,
+          getSampleValue,
           stats.min,
           stats.max,
           height,
@@ -2163,7 +3028,7 @@ export default function App() {
           return null;
         }
 
-        const channel = channels[idx];
+        const channel = getChannelById(assignment.channelId);
         const style = channel?.lineStyle || "solid";
         const thickness = Number(channel?.thickness || 2);
         return (
@@ -2231,8 +3096,7 @@ export default function App() {
     const statCurves = hasRenderableData
       ? yAssignments.map((assignment) => {
         const assignmentKey = `${assignment.channelId}:${assignment.axis}`;
-        const idx = channelIndex(assignment.channelId);
-        const channel = channels[idx];
+        const channel = getChannelById(assignment.channelId);
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         const curves = [];
 
@@ -2242,7 +3106,7 @@ export default function App() {
             return;
           }
 
-          const sourceValues = samples.map((sample) => sample.values[idx]);
+          const sourceValues = samples.map((sample) => getSampleValue(sample, assignment.channelId));
           const statValues = computeRollingStatSeries(sourceValues, mode);
           const points = downsamplePointsByPixel(statValues
             .map((value, sampleIndex) => {
@@ -2524,6 +3388,317 @@ export default function App() {
     );
   };
 
+  const functionDragMime = "application/x-jw-function-block";
+
+  const functionPaletteGroups = [
+    {
+      title: "Operadores",
+      items: [
+        { type: "add", label: "+", tone: "operator" },
+        { type: "subtract", label: "-", tone: "operator" },
+        { type: "multiply", label: "*", tone: "operator" },
+        { type: "divide", label: "/", tone: "operator" },
+        { type: "power", label: "^", tone: "operator" },
+        { type: "abs", label: "Abs", tone: "operator" },
+        { type: "sqrt", label: "Sqrt", tone: "operator" },
+        { type: "round", label: "Round", tone: "operator" },
+        { type: "gt", label: ">", tone: "operator" },
+        { type: "lt", label: "<", tone: "operator" },
+        { type: "gte", label: ">=", tone: "operator" },
+        { type: "lte", label: "<=", tone: "operator" }
+      ]
+    },
+    {
+      title: "Ventanas",
+      items: [
+        { type: "current", label: "Actual", tone: "window" },
+        { type: "initial", label: "Inicial", tone: "window" },
+        { type: "min", label: "Min", tone: "window" },
+        { type: "max", label: "Max", tone: "window" },
+        { type: "avg", label: "Prom", tone: "window" },
+        { type: "rangeAbs", label: "|Max-Min|", tone: "window" },
+        { type: "delta", label: "Delta", tone: "window" },
+        { type: "slope", label: "Pend", tone: "window" },
+        { type: "std", label: "Std", tone: "window" },
+        { type: "rms", label: "RMS", tone: "window" }
+      ]
+    },
+    {
+      title: "Constantes",
+      items: [{ type: "number", label: "Número", tone: "number" }]
+    }
+  ];
+
+  const updateFunctionBlockAtPath = (path, updater) => {
+    setFunctionDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const updateNode = (node, depth = 0) => {
+        if (depth >= path.length) {
+          return updater(node);
+        }
+        if (!node) {
+          return node;
+        }
+        const key = path[depth];
+        return { ...node, [key]: updateNode(node?.[key], depth + 1) };
+      };
+      const nextBlock = updateNode(prev.block);
+      return { ...prev, block: nextBlock, expression: nextBlock ? blockToExpression(nextBlock) : "" };
+    });
+    setFunctionMessage("");
+  };
+
+  const clearFunctionBlock = () => {
+    setFunctionDraft((prev) => (prev ? { ...prev, block: null, expression: "" } : prev));
+    setFunctionMessage("");
+  };
+
+  const createFunctionBlockFromPayload = (payload) => {
+    const fallbackSource = payload?.sourceId || null;
+    if (payload?.kind === "variable") {
+      return createFunctionBlock("variable", fallbackSource);
+    }
+    return createFunctionBlock(payload?.type || "current", null);
+  };
+
+  const handleFunctionDragStart = (event, payload) => {
+    const encodedPayload = JSON.stringify(payload);
+    event.dataTransfer.effectAllowed = "copyMove";
+    event.dataTransfer.setData(functionDragMime, encodedPayload);
+    event.dataTransfer.setData("text/plain", `jwserial-function:${encodedPayload}`);
+  };
+
+  const readFunctionDragPayload = (event) => {
+    const raw =
+      event.dataTransfer.getData(functionDragMime) ||
+      event.dataTransfer.getData("text/plain").replace(/^jwserial-function:/, "");
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const allowFunctionDrop = (event) => {
+    if (Array.from(event.dataTransfer.types).includes(functionDragMime)) {
+      event.preventDefault();
+      const payload = readFunctionDragPayload(event);
+      event.dataTransfer.dropEffect = payload?.kind === "placed" ? "move" : "copy";
+    }
+  };
+
+  const allowFunctionTrashDrop = (event) => {
+    if (Array.from(event.dataTransfer.types).includes(functionDragMime)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+    }
+  };
+
+  const dropFunctionBlockAtPath = (event, path) => {
+    const payload = readFunctionDragPayload(event);
+    if (!payload) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (payload.kind === "placed") {
+      if (!Array.isArray(payload.path) || JSON.stringify(payload.path) === JSON.stringify(path)) {
+        return;
+      }
+      setFunctionDraft((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const readNode = (node, readPath, depth = 0) => {
+          if (!node || depth >= readPath.length) {
+            return node || null;
+          }
+          return readNode(node[readPath[depth]], readPath, depth + 1);
+        };
+        const writeNode = (node, writePath, value, depth = 0) => {
+          if (depth >= writePath.length) {
+            return value;
+          }
+          if (!node) {
+            return node;
+          }
+          const key = writePath[depth];
+          return { ...node, [key]: writeNode(node[key], writePath, value, depth + 1) };
+        };
+        const movedBlock = readNode(prev.block, payload.path);
+        if (!movedBlock) {
+          return prev;
+        }
+        const withoutSource = writeNode(prev.block, payload.path, null);
+        const nextBlock = writeNode(withoutSource, path, movedBlock);
+        return { ...prev, block: nextBlock, expression: nextBlock ? blockToExpression(nextBlock) : "" };
+      });
+      setFunctionMessage("");
+      return;
+    }
+    updateFunctionBlockAtPath(path, () => createFunctionBlockFromPayload(payload));
+  };
+
+  const dropFunctionBlockToTrash = (event) => {
+    const payload = readFunctionDragPayload(event);
+    if (!payload || payload.kind !== "placed" || !Array.isArray(payload.path)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    updateFunctionBlockAtPath(payload.path, () => null);
+  };
+
+  const dropFunctionVariableAtPath = (event, path) => {
+    const payload = readFunctionDragPayload(event);
+    if (!payload || payload.kind !== "variable") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    updateFunctionBlockAtPath(path, (node) => ({ ...node, sourceId: payload.sourceId }));
+  };
+
+  const patchFunctionBlockAtPath = (path, patch) => {
+    updateFunctionBlockAtPath(path, (node) => ({ ...node, ...patch }));
+  };
+
+  const renderPaletteBlock = (item) => (
+    <button
+      key={`${item.type || item.sourceId}-${item.label}`}
+      type="button"
+      className={`function-palette__block function-palette__block--${item.tone || "operator"}`}
+      draggable
+      onDragStart={(event) => handleFunctionDragStart(event, item.kind ? item : { kind: "block", type: item.type })}
+      onDoubleClick={() => updateFunctionBlockAtPath([], () => createFunctionBlockFromPayload(item.kind ? item : { kind: "block", type: item.type }))}
+      title="Arrastra este bloque a una ranura"
+    >
+      {item.color ? <span className="function-palette__dot" style={{ background: item.color }} /> : null}
+      <span>{item.label}</span>
+    </button>
+  );
+
+  const handlePlacedFunctionDragStart = (event, path) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(functionDragMime, JSON.stringify({ kind: "placed", path }));
+  };
+
+  const renderFunctionVariableSlot = (block, path) => {
+    const channel = visibleChannels.find((item) => item.id === block.sourceId) || null;
+    return (
+      <span
+        className={`function-slot ${channel ? "function-slot--variable" : "function-slot--empty"}`}
+        onDragOver={allowFunctionDrop}
+        onDrop={(event) => dropFunctionVariableAtPath(event, path)}
+        title="Arrastra una variable aquí"
+      >
+        {channel ? <span className="function-palette__dot" style={{ background: channel.color }} /> : null}
+        <span>{channel?.name || ""}</span>
+      </span>
+    );
+  };
+
+  const renderFunctionSlot = (block, path, label) => (
+    <span
+      className="function-slot-shell"
+      onDragOver={allowFunctionDrop}
+      onDrop={(event) => dropFunctionBlockAtPath(event, path)}
+      title="Suelta un bloque aquí"
+    >
+      {block ? renderFunctionBlock(block, path) : <span className="function-slot function-slot--empty" aria-label={label} />}
+    </span>
+  );
+
+  const renderFunctionBlock = (block, path = []) => {
+    if (!block) {
+      return null;
+    }
+    const operation = functionBlockOperations.find((item) => item.id === block.type);
+    const setPatch = (patch) => patchFunctionBlockAtPath(path, patch);
+    const dragProps = {
+      draggable: true,
+      onDragStart: (event) => handlePlacedFunctionDragStart(event, path),
+      onDragOver: allowFunctionDrop,
+      onDrop: (event) => dropFunctionBlockAtPath(event, path)
+    };
+
+    if (block.type === "number") {
+      return (
+        <span className="function-block function-block--number" {...dragProps}>
+          <span>Número</span>
+          <input
+            type="number"
+            value={block.value}
+            onChange={(event) => setPatch({ value: event.target.value })}
+          />
+        </span>
+      );
+    }
+
+    if (block.type === "variable") {
+      const channel = visibleChannels.find((item) => item.id === block.sourceId) || visibleChannels[0];
+      return (
+        <span className="function-block function-block--variable" {...dragProps}>
+          {channel ? <span className="function-palette__dot" style={{ background: channel.color }} /> : null}
+          <span>{channel?.name || "Variable"}</span>
+        </span>
+      );
+    }
+
+    if (unaryExpressionFunctions[block.type]) {
+      return (
+        <span className="function-block function-block--operator" {...dragProps}>
+          <span>{operation?.label || unaryExpressionFunctions[block.type]}</span>
+          <span>(</span>
+          {renderFunctionSlot(block.input, [...path, "input"], "valor")}
+          <span>)</span>
+        </span>
+      );
+    }
+
+    if (binaryBlockSymbols[block.type]) {
+      return (
+        <span className="function-block function-block--operator" {...dragProps}>
+          {renderFunctionSlot(block.left, [...path, "left"], "A")}
+          <span className="function-block__symbol">{binaryBlockSymbols[block.type]}</span>
+          {renderFunctionSlot(block.right, [...path, "right"], "B")}
+        </span>
+      );
+    }
+
+    return (
+      <span className="function-block function-block--window" {...dragProps}>
+        <span className="function-block__label">{operation?.label || "Actual"}</span>
+        <span>de</span>
+        {renderFunctionVariableSlot(block, path)}
+        {operation?.needsWindow ? (
+          <>
+            <span>en</span>
+            <input
+              type="number"
+              min="1"
+              value={block.windowValue}
+              onChange={(event) => setPatch({ windowValue: event.target.value })}
+            />
+            <select
+              value={block.windowUnit || "seconds"}
+              onChange={(event) => setPatch({ windowUnit: event.target.value })}
+            >
+              <option value="seconds">s</option>
+              <option value="samples">m</option>
+            </select>
+          </>
+        ) : null}
+      </span>
+    );
+  };
   return (
     <div className="app">
       <aside className="sidebar">
@@ -2653,6 +3828,38 @@ export default function App() {
           </section>
 
           <section className="sidebar__section">
+            <div className="sidebar__section-title">
+              <h2>Funciones</h2>
+              <button type="button" onClick={() => openFunctionBuilder()}>
+                Nueva
+              </button>
+            </div>
+            <div className="channel-table">
+              {virtualChannels.length === 0 ? (
+                <p className="connection-status">Sin funciones virtuales.</p>
+              ) : (
+                virtualChannels.map((channel) => (
+                  <div
+                    className="channel-row channel-row--virtual"
+                    key={channel.id}
+                    draggable
+                    onDragStart={(event) => handleChannelDragStart(event, channel.id)}
+                    onClick={() => openFunctionBuilder(virtualFunctions.find((item) => item.id === channel.id))}
+                    onContextMenu={(event) => openVariableMenu(event, channel.id)}
+                  >
+                    <span
+                      className="channel-color"
+                      style={{ backgroundColor: channel.color }}
+                    />
+                    <span className="channel-name">{channel.name}</span>
+                    <span className="channel-value">{channel.value.toFixed(2)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="sidebar__section">
             <h2>Acciones</h2>
             <div className="actions">
               <button type="button" onClick={() => setModal("config")}>
@@ -2688,7 +3895,7 @@ export default function App() {
                 aria-label="Configurar capturas"
                 title="Configurar capturas"
               >
-                ⚙
+                ?
               </button>
               </div>
               <div className="actions__row actions__row--split">
@@ -2739,10 +3946,10 @@ export default function App() {
               const draft = getDraft(plot.id);
               const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
               const legendEntries = plot.assignments.map((assignment) => {
-                const idx = channelIndex(assignment.channelId);
-                const channel = channels[idx];
+                const channel = getChannelById(assignment.channelId);
                 return {
                   key: `${assignment.channelId}-${assignment.axis}`,
+                  channelId: assignment.channelId,
                   axis: assignment.axis.toUpperCase(),
                   name: channel?.name || assignment.channelId,
                   color: channel?.color || "#64748b"
@@ -2783,7 +3990,7 @@ export default function App() {
                             key={entry.key}
                             type="button"
                             className="plot__legend-row"
-                            onContextMenu={(event) => openVariableMenu(event, entry.key.split("-")[0])}
+                            onContextMenu={(event) => openVariableMenu(event, entry.channelId)}
                           >
                             <span className="plot__legend-dot" style={{ backgroundColor: entry.color }} />
                             <span>{entry.name}</span>
@@ -2838,7 +4045,7 @@ export default function App() {
                           ))}
                         </div>
                         <div className="plot-menu__channels">
-                          {visibleChannels.map((channel) => (
+                          {allChannels.map((channel) => (
                             <button
                               key={channel.id}
                               type="button"
@@ -2865,8 +4072,7 @@ export default function App() {
                             <span className="plot-menu__muted">Aún no hay señales en este plot.</span>
                           ) : (
                             plot.assignments.map((assignment) => {
-                              const idx = channelIndex(assignment.channelId);
-                              const channel = channels[idx];
+                              const channel = getChannelById(assignment.channelId);
                               const assignmentKey = `${assignment.channelId}:${assignment.axis}`;
                               return (
                                 <div key={assignmentKey} className="plot-menu__assigned-row">
@@ -2916,12 +4122,11 @@ export default function App() {
                             <span>Max</span>
                             {yAssignments.map((assignment) => {
                               const targetKey = `${assignment.channelId}:${assignment.axis}`;
-                              const idx = channelIndex(assignment.channelId);
-                              const channel = channels[idx];
+                              const channel = getChannelById(assignment.channelId);
                               const stats = [
                                 { field: "statAvgTargets", label: "Promedio" },
-                                { field: "statMinTargets", label: "Minimo" },
-                                { field: "statMaxTargets", label: "Maximo" }
+                                { field: "statMinTargets", label: "Mínimo" },
+                                { field: "statMaxTargets", label: "Máximo" }
                               ];
                               return (
                                 <React.Fragment key={targetKey}>
@@ -2959,8 +4164,7 @@ export default function App() {
                             ) : (
                               yAssignments.map((assignment) => {
                                 const targetKey = `${assignment.channelId}:${assignment.axis}`;
-                                const idx = channelIndex(assignment.channelId);
-                                const channel = channels[idx];
+                                const channel = getChannelById(assignment.channelId);
                                 const selected = (Array.isArray(plot[stat.field]) ? plot[stat.field] : []).includes(targetKey);
                                 return (
                                   <label key={`${stat.key}-${targetKey}`}>
@@ -3065,12 +4269,22 @@ export default function App() {
 
       {modal ? (
         <div className="modal-backdrop">
-          <div className="modal">
+          <div
+            ref={modal === "function" ? functionModalRef : null}
+            className={`modal ${modal === "function" ? "modal--function" : ""}`}
+            style={modal === "function" ? { width: `${functionModalWidth}px` } : undefined}
+            onMouseUp={modal === "function" ? () => {
+              if (functionModalRef.current) {
+                persistFunctionModalWidth(functionModalRef.current.getBoundingClientRect().width);
+              }
+            } : undefined}
+          >
             <header className="modal__header">
               <h3>
                 {modal === "config" && "Configuración"}
                 {modal === "captures" && "Capturas"}
                 {modal === "event" && "Evento"}
+                {modal === "function" && "Función"}
                 {modal === "save" && "Guardar configuración"}
                 {modal === "load" && "Cargar configuración"}
               </h3>
@@ -3200,6 +4414,70 @@ export default function App() {
                       }
                     />
                     Incluye timestamp en X
+                  </label>
+                  <label>
+                    Timeout sin trama válida (s)
+                    <input
+                      type="number"
+                      min="0"
+                      value={appSettings.serialTimeoutSeconds}
+                      onChange={(event) =>
+                        updateAppSettings({ serialTimeoutSeconds: Math.max(0, Number(event.target.value) || 0) })
+                      }
+                    />
+                  </label>
+                  <p className="modal__hint">
+                    Usa 0 para desactivar la desconexión automática por falta de tramas válidas.
+                  </p>
+                </div>
+              ) : null}
+
+              {modal === "config" ? (
+                <div className="modal__form modal__section">
+                  <h4>Filtro de tramas</h4>
+                  <p className="modal__hint">
+                    Filtra las líneas antes de graficarlas. Escribe un prefijo o patrón por línea.
+                  </p>
+                  <label>
+                    Modo de filtro
+                    <select
+                      value={appSettings.serialFilterMode || "none"}
+                      onChange={(event) => updateAppSettings({ serialFilterMode: event.target.value })}
+                    >
+                      <option value="none">Sin filtro</option>
+                      <option value="accept">Aceptar solo coincidencias</option>
+                      <option value="reject">Rechazar coincidencias</option>
+                    </select>
+                  </label>
+                  <label className="modal__field--textarea">
+                    Prefijos/patrones
+                    <textarea
+                      rows={4}
+                      value={appSettings.serialFilterPatterns || ""}
+                      placeholder={"LORA_\n+EVT"}
+                      onChange={(event) => updateAppSettings({ serialFilterPatterns: event.target.value })}
+                    />
+                  </label>
+                  <p className="modal__hint">
+                    Ejemplo: usa "Aceptar solo coincidencias" con LORA_ para graficar solo tramas como LORA_ADC:1409.96,RSSI:-29,SNR:12,FREQ:916.000.
+                  </p>
+                </div>
+              ) : null}
+
+              {modal === "config" ? (
+                <div className="modal__form modal__section">
+                  <h4>Inicio y sesión</h4>
+                  <p className="modal__hint">Define cómo JW-Serial debe manejar la última configuración guardada al abrir.</p>
+                  <label>
+                    Al iniciar JW-Serial
+                    <select
+                      value={appSettings.sessionRestoreMode}
+                      onChange={(event) => updateAppSettings({ sessionRestoreMode: event.target.value })}
+                    >
+                      <option value="ask">Preguntar si cargar la última sesión</option>
+                      <option value="auto">Cargar la última sesión automáticamente</option>
+                      <option value="fresh">Empezar de cero sin preguntar</option>
+                    </select>
                   </label>
                 </div>
               ) : null}
@@ -3362,6 +4640,103 @@ export default function App() {
                 </div>
               ) : null}
 
+              {modal === "function" && functionDraft ? (
+                <div className="modal__form function-builder function-builder--blocks">
+                  <div className="modal__field">
+                    <span>Nombre</span>
+                    <input
+                      type="text"
+                      value={functionDraft.name}
+                      placeholder="Rango uV 200s"
+                      onChange={(event) => setFunctionDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    />
+                  </div>
+                  <div className="modal__field">
+                    <span>Color</span>
+                    <input
+                      type="color"
+                      value={functionDraft.color}
+                      onChange={(event) => setFunctionDraft((prev) => ({ ...prev, color: event.target.value }))}
+                    />
+                  </div>
+                  <div className="function-workbench">
+                    <div className="function-palette" aria-label="Paleta de bloques">
+                      <div className="function-palette__intro">
+                        <span className="function-builder__section-title">Bloques</span>
+                        <p className="modal__hint">Arrastra piezas a la fórmula o a cualquier ranura.</p>
+                      </div>
+                      <div className="function-palette__rows">
+                        {functionPaletteGroups.map((group) => (
+                          <div key={group.title} className="function-palette__group">
+                            <span>{group.title}</span>
+                            <div className="function-palette__blocks">
+                              {group.items.map(renderPaletteBlock)}
+                            </div>
+                          </div>
+                        ))}
+                        <div className="function-palette__group">
+                          <span>Variables</span>
+                          <div className="function-palette__blocks">
+                            {visibleChannels.map((channel) => renderPaletteBlock({
+                              kind: "variable",
+                              sourceId: channel.id,
+                              label: channel.name,
+                              color: channel.color,
+                              tone: "variable"
+                            }))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="function-canvas">
+                      <div className="function-canvas__header">
+                        <span>Fórmula</span>
+                        <span>{functionDraft.block ? "Resultado" : "Vacío"}</span>
+                      </div>
+                      <div className="function-canvas__result" onDragOver={allowFunctionDrop} onDrop={(event) => dropFunctionBlockAtPath(event, [])}>
+                        {functionDraft.block ? renderFunctionSlot(functionDraft.block, [], "Suelta un bloque") : (
+                          <div className="function-canvas__empty">
+                            <strong>Suelta un bloque aquí</strong>
+                            <span>Empieza desde un operador, ventana, número o variable.</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="function-canvas__tools">
+                        <button type="button" onClick={clearFunctionBlock}>Limpiar fórmula</button>
+                        <div
+                          className="function-trash"
+                          onDragEnter={allowFunctionTrashDrop}
+                          onDragOver={allowFunctionTrashDrop}
+                          onDrop={dropFunctionBlockToTrash}
+                        >
+                          <span>Papelera</span>
+                          <small>Arrastra aquí para borrar</small>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="function-builder__preview">
+                    <span>Fórmula generada</span>
+                    <code>{draftExpression(functionDraft)}</code>
+                  </div>
+                  <p className={`modal__hint ${validateFunctionDraft(functionDraft) ? "function-builder__error" : "function-builder__ok"}`}>
+                    {functionMessage || validateFunctionDraft(functionDraft) || "Bloques válidos. Se generará una variable virtual arrastrable."}
+                  </p>
+                  <div className="modal__actions modal__actions--spaced">
+                    <button type="button" className="button-primary" onClick={saveFunctionDraft}>
+                      Guardar función
+                    </button>
+                    {virtualFunctions.some((item) => item.id === functionDraft.id) ? (
+                      <button type="button" className="button-danger" onClick={() => deleteFunction(functionDraft.id)}>
+                        Eliminar
+                      </button>
+                    ) : null}
+                    <button type="button" onClick={closeModal}>
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {modal === "save" || modal === "load" ? (
                 <div className="modal__form">
                   <label>
@@ -3389,6 +4764,93 @@ export default function App() {
                   {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {startupRestorePrompt ? (
+        <div className="modal-backdrop modal-backdrop--top">
+          <div className="modal modal--compact">
+            <header className="modal__header">
+              <h3>Última sesión</h3>
+              <button type="button" onClick={startEmptySession}>
+                Cerrar
+              </button>
+            </header>
+            <div className="modal__body">
+              <div className="modal__form">
+                <p className="modal__hint">
+                  Se encontró una configuración de la sesión anterior. Puedes cargarla o empezar con una sesión limpia.
+                </p>
+                <div className="template-confirm__actions">
+                  <button
+                    type="button"
+                    className="template-confirm__button template-confirm__button--secondary"
+                    onClick={startEmptySession}
+                  >
+                    Empezar de cero
+                  </button>
+                  <button
+                    type="button"
+                    className="template-confirm__button template-confirm__button--primary"
+                    onClick={() => loadLastSession(startupRestorePrompt)}
+                  >
+                    Cargar última sesión
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {connectIdentifierPrompt !== null ? (
+        <div className="modal-backdrop modal-backdrop--top">
+          <div className="modal modal--compact">
+            <header className="modal__header">
+              <h3>Identificador</h3>
+              <button type="button" onClick={() => setConnectIdentifierPrompt(null)}>
+                Cerrar
+              </button>
+            </header>
+            <div className="modal__body">
+              <div className="modal__form">
+                <label>
+                  Identificador de tarjeta/lote
+                  <input
+                    type="text"
+                    value={connectIdentifierPrompt}
+                    placeholder={captureConfig.label || "PCB_10115"}
+                    autoFocus
+                    onChange={(event) => setConnectIdentifierPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        confirmConnectIdentifier();
+                      }
+                    }}
+                  />
+                </label>
+                <p className="modal__hint">
+                  Se usará para nombrar capturas mientras esté activo "Usar como prefijo".
+                </p>
+                <div className="template-confirm__actions">
+                  <button
+                    type="button"
+                    className="template-confirm__button template-confirm__button--secondary"
+                    onClick={() => setConnectIdentifierPrompt(null)}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    className="template-confirm__button template-confirm__button--primary"
+                    onClick={confirmConnectIdentifier}
+                  >
+                    Conectar
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -3485,10 +4947,11 @@ export default function App() {
         >
           <strong>Variable</strong>
           {(() => {
-            const channel = channels.find((item) => item.id === variableMenu.channelId);
+            const channel = getChannelById(variableMenu.channelId);
             if (!channel) {
               return <span>No disponible</span>;
             }
+            const updateChannelStyle = channel.virtual ? updateVirtualFunction : updateChannel;
 
             return (
               <>
@@ -3497,7 +4960,7 @@ export default function App() {
                   <input
                     type="text"
                     value={channel.name}
-                    onChange={(event) => updateChannel(channel.id, { name: event.target.value || channel.id })}
+                    onChange={(event) => updateChannelStyle(channel.id, { name: event.target.value || channel.id })}
                   />
                 </label>
                 <label>
@@ -3505,14 +4968,14 @@ export default function App() {
                   <input
                     type="color"
                     value={channel.color}
-                    onChange={(event) => updateChannel(channel.id, { color: event.target.value })}
+                    onChange={(event) => updateChannelStyle(channel.id, { color: event.target.value })}
                   />
                 </label>
                 <label>
                   Estilo
                   <select
                     value={channel.lineStyle || "solid"}
-                    onChange={(event) => updateChannel(channel.id, { lineStyle: event.target.value })}
+                    onChange={(event) => updateChannelStyle(channel.id, { lineStyle: event.target.value })}
                   >
                     <option value="solid">Sólida</option>
                     <option value="dashed">Discontinua</option>
@@ -3526,9 +4989,32 @@ export default function App() {
                     min="1"
                     max="8"
                     value={channel.thickness || 2}
-                    onChange={(event) => updateChannel(channel.id, { thickness: clamp(Number(event.target.value) || 2, 1, 8) })}
+                    onChange={(event) => updateChannelStyle(channel.id, { thickness: clamp(Number(event.target.value) || 2, 1, 8) })}
                   />
                 </label>
+                {channel.virtual ? (
+                  <div className="modal__actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeVariableMenu();
+                        openFunctionBuilder(virtualFunctions.find((item) => item.id === channel.id));
+                      }}
+                    >
+                      Editar función
+                    </button>
+                    <button
+                      type="button"
+                      className="button-danger"
+                      onClick={() => {
+                        deleteFunction(channel.id);
+                        closeVariableMenu();
+                      }}
+                    >
+                      Eliminar
+                    </button>
+                  </div>
+                ) : null}
                 <button type="button" onClick={closeVariableMenu}>Cerrar</button>
               </>
             );
@@ -3538,3 +5024,11 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
