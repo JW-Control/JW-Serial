@@ -1,5 +1,7 @@
 # JW-Serial
 
+> Estado actual: este README describe **JW-Serial v1.2.0**, incluyendo funciones virtuales por bloques, filtros de tramas, parser `clave:valor`, autoescalado vertical por tramo visible, escalas Y1/Y2 alineadas, capturas automáticas, plantillas, sesión persistente y flujo de release para Windows.
+
 JW-Serial es una aplicación de escritorio para Windows orientada a lectura, visualización y documentación de datos por puerto serial. Está pensada para trabajar con microcontroladores, sensores, tarjetas electrónicas y sistemas embebidos durante pruebas cortas o sesiones largas de varias horas.
 
 La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG automáticas, exportación CSV, plantillas de configuración y registro de sesión.
@@ -8,22 +10,29 @@ La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG a
 
 ## Características Principales
 
-- Lectura de datos por puerto serial.
+- Lectura de datos por puerto serial y monitor serial integrado.
+- Parser flexible para tramas numéricas CSV/TSV y tramas `clave:valor`.
+- Filtros de tramas para aceptar solo ciertos textos/prefijos o rechazar líneas específicas.
 - Plotter en tiempo real con múltiples gráficos.
-- Monitor serial integrado.
-- Variables configurables con nombre, color, estilo y grosor.
+- Variables físicas y virtuales configurables con nombre, color, estilo y grosor.
+- Constructor visual de funciones por bloques para crear variables calculadas sin escribir sintaxis manual.
+- Funciones con operadores, constantes y ventanas como actual, inicial, mínimo, máximo, promedio y `|Max-Min|`.
+- Funciones calculadas sobre el historial completo de datos, no solo desde el momento en que se crean.
 - Asignación de señales por drag and drop hacia X, Y1 o Y2.
 - Menú contextual por gráfico para asignar, quitar y configurar señales rápidamente.
 - Ejes X, Y1 y Y2 con modo automático y manual.
 - Escalas canónicas para ejes y grillas legibles.
+- Autoescalado Y1/Y2 sobre el tramo visible cuando X está en modo manual.
+- Escala Y2 alineada visualmente con Y1 para evitar grillas superpuestas confusas.
 - Capturas PNG manuales y automáticas de cada plot.
 - Capturas funcionando incluso con la ventana minimizada.
-- Nombres de captura con lote, prefijo y subcarpeta.
+- Nombres de captura con lote, prefijo, subcarpeta y contador anticolisión.
 - Registro `session_log.csv` para documentar sesiones de prueba.
 - Marcadores de eventos durante la adquisición.
-- Cálculo de métricas de recepción desde el software.
+- Cálculo de métricas de recepción desde el software: SPS, periodo y jitter.
 - Modo claro y modo oscuro.
 - Plantillas internas de configuración.
+- Restauración configurable de la última sesión.
 - Guardado y carga de configuración por archivo JSON.
 - Exportación CSV de datos capturados.
 - Instalador y versión portable para Windows.
@@ -32,8 +41,8 @@ La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG a
 
 En la sección de releases de GitHub se publican dos opciones:
 
-- `JW-Serial-Setup-1.1.0-x64.exe`: instalador para Windows.
-- `JW-Serial-Portable-1.1.0-x64.exe`: versión portable, no requiere instalación.
+- `JW-Serial-Setup-1.2.0-x64.exe`: instalador para Windows.
+- `JW-Serial-Portable-1.2.0-x64.exe`: versión portable, no requiere instalación.
 
 Para la mayoría de usuarios, la versión portable es suficiente: descarga el ejecutable, ábrelo y conecta tu dispositivo serial.
 
@@ -68,6 +77,35 @@ Ejemplo con tabulador:
 ```
 
 La aplicación detecta automáticamente si la trama usa coma o tabulador.
+
+También puede leer tramas con pares `clave:valor`, separadas por coma. Esto permite trabajar con mensajes más descriptivos sin cambiar el firmware a un formato puramente numérico.
+
+Ejemplo:
+
+```text
+LORA_ADC:1409.96,RSSI:-29,SNR:12,FREQ:916.000
+```
+
+En este caso, JW-Serial detecta variables como `LORA_ADC`, `RSSI`, `SNR` y `FREQ`, y las deja disponibles para graficar, exportar o usar dentro de funciones virtuales.
+
+### Filtro de Tramas
+
+Desde **Configuración** puedes definir filtros de lectura para evitar que líneas auxiliares contaminen el plotter.
+
+Modos disponibles:
+
+- **Sin filtro**: procesa todas las tramas que pueda interpretar.
+- **Aceptar solo**: procesa únicamente las líneas que coincidan con los textos definidos.
+- **Rechazar solo**: ignora las líneas que coincidan con los textos definidos y procesa el resto.
+
+Ejemplo práctico:
+
+```text
+Aceptar solo: LORA_
+Rechazar solo: +EVT:
+```
+
+Esto es útil cuando el monitor recibe datos mezclados, por ejemplo tramas útiles `LORA_ADC:...` junto a mensajes automáticos del módulo como `+EVT:RXP2P:...`.
 
 ### Timestamp en X
 
@@ -153,6 +191,10 @@ JW-Serial usa pasos de escala legibles y consistentes, por ejemplo:
 ```
 
 Los ejes pueden trabajar en modo automático o manual. En modo manual puedes desplazar la vista con la rueda del mouse o arrastrando sobre la zona correspondiente.
+
+Cuando X está en modo manual y Y1/Y2 permanecen en automático, el autoescalado vertical se calcula sobre el tramo visible. Así puedes hacer zoom o desplazarte en X sin que valores antiguos, fuera de pantalla, sigan forzando la escala vertical.
+
+Si Y2 está activo, su escala se adapta para quedar alineada visualmente con Y1 usando pasos canónicos. Esto evita que las subdivisiones de ambas grillas se superpongan con separaciones extrañas.
 
 ## Capturas
 
@@ -246,6 +288,27 @@ Fin de prueba
 
 Los eventos se guardan en `session_log.csv` cuando la sesión está configurada con subcarpeta de lote.
 
+## Funciones Virtuales
+
+La sección **Funciones** permite crear variables calculadas a partir de las variables reales recibidas por serial. Estas funciones aparecen como variables virtuales y se pueden arrastrar al plotter igual que cualquier señal física.
+
+El editor usa bloques visuales para evitar errores de sintaxis. Puedes arrastrar:
+
+- Operadores: suma, resta, multiplicación, división, potencia y valor absoluto.
+- Ventanas: valor actual, valor inicial, mínimo, máximo, promedio y `|Max-Min|`.
+- Constantes numéricas.
+- Variables físicas detectadas desde la trama serial.
+
+Ejemplo de validación de estabilidad:
+
+```text
+abs(max([uV], 200s) - min([uV], 200s))
+```
+
+Ese cálculo genera una variable virtual con la diferencia absoluta entre el máximo y el mínimo de `uV` en una ventana de 200 segundos.
+
+Las funciones recalculan el historial completo disponible, por lo que si creas una función después de haber adquirido datos, JW-Serial completa la curva desde el inicio del registro siempre que existan muestras suficientes.
+
 ## Plantillas
 
 Las plantillas guardan configuraciones reutilizables dentro de la app.
@@ -333,3 +396,7 @@ release/
 ## Licencia
 
 Este proyecto usa licencia MIT. Consulta el archivo `LICENSE`.
+
+## Notas de Release
+
+El archivo `RELEASE_NOTES_1.2.0.md` contiene el texto preparado para pegar en **New release** de GitHub. Para publicar la versión usa el tag `v1.2.0`, el título `JW-Serial v1.2.0` y adjunta el instalador/portable generados.
