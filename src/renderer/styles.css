@@ -608,6 +608,14 @@ textarea {
   overflow: hidden;
 }
 
+.plot__series-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
 
 
 .plot__legend-box {
@@ -624,6 +632,7 @@ textarea {
   gap: 6px;
   font-size: 11px;
   color: var(--color-text);
+  z-index: 2;
 }
 
 .plot__legend-row {

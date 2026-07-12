@@ -220,12 +220,6 @@ const buildRxMetricValues = (stats) => ({
   sysJitterMs: Number(stats?.jitterMs || 0)
 });
 
-const dashByStyle = {
-  solid: "",
-  dashed: "8 4",
-  dotted: "2 4"
-};
-
 const axisLabels = {
   x: "X",
   y1: "Y1",
@@ -556,7 +550,7 @@ const downsamplePointsByPixel = (points) => {
   return reduced.length >= 2 ? reduced : points;
 };
 
-const buildSeries = (
+const buildSeriesPoints = (
   samples,
   xValues,
   channelId,
@@ -571,7 +565,7 @@ const buildSeries = (
   plotMode = "normal"
 ) => {
   if (samples.length <= 1) {
-    return "";
+    return [];
   }
 
   const spreadX = maxX - minX || 1;
@@ -593,17 +587,18 @@ const buildSeries = (
   };
 
   if (plotMode === "minmax") {
-    const buckets = new Map();
+    const bucketCount = Math.max(1, Math.ceil(plotWidth) + 1);
+    const buckets = new Array(bucketCount);
     samples.forEach((sample, sampleIndex) => {
       const point = toPoint(sample, sampleIndex);
       if (!point) {
         return;
       }
 
-      const key = Math.floor(point.x);
-      const current = buckets.get(key);
+      const key = clamp(Math.floor(point.x - padding.left), 0, bucketCount - 1);
+      const current = buckets[key];
       if (!current) {
-        buckets.set(key, { first: point, last: point, min: point, max: point });
+        buckets[key] = { first: point, last: point, min: point, max: point };
         return;
       }
 
@@ -617,10 +612,12 @@ const buildSeries = (
     });
 
     const reduced = [];
-    [...buckets.keys()].sort((a, b) => a - b).forEach((key) => {
-      const bucket = buckets.get(key);
+    buckets.forEach((bucket) => {
+      if (!bucket) {
+        return;
+      }
       [bucket.first, bucket.min, bucket.max, bucket.last]
-        .sort((a, b) => a.x - b.x)
+        .sort((a, b) => a.y - b.y)
         .forEach((point) => {
           const previous = reduced[reduced.length - 1];
           if (!previous || previous.x !== point.x || previous.y !== point.y) {
@@ -629,7 +626,7 @@ const buildSeries = (
         });
     });
 
-    return reduced.length >= 2 ? buildPath(reduced) : "";
+    return reduced.length >= 2 ? reduced : [];
   }
 
   const points = samples.map((sample, sampleIndex) => {
@@ -637,11 +634,62 @@ const buildSeries = (
   }).filter(Boolean);
 
   if (points.length < 2) {
-    return "";
+    return [];
   }
 
-  const reducedPoints = downsamplePointsByPixel(points);
-  return buildPath(reducedPoints);
+  return downsamplePointsByPixel(points);
+};
+
+const PlotSeriesCanvas = ({ width, height, padding, series }) => {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(width * pixelRatio));
+    canvas.height = Math.max(1, Math.round(height * pixelRatio));
+    const context = canvas.getContext("2d");
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.save();
+    context.beginPath();
+    context.rect(
+      padding.left,
+      padding.top,
+      width - padding.left - padding.right,
+      height - padding.top - padding.bottom
+    );
+    context.clip();
+
+    series.forEach(({ points, color, thickness, style }) => {
+      if (points.length < 2) {
+        return;
+      }
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length; index += 1) {
+        context.lineTo(points[index].x, points[index].y);
+      }
+      context.strokeStyle = color;
+      context.lineWidth = thickness;
+      context.globalAlpha = 0.95;
+      context.setLineDash(style === "dashed" ? [8, 4] : style === "dotted" ? [2, 4] : []);
+      context.stroke();
+    });
+    context.restore();
+  }, [height, padding, series, width]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="plot__series-canvas"
+      style={{ height: `${height}px` }}
+      aria-hidden="true"
+    />
+  );
 };
 
 const basePlotTicks = {
@@ -3286,14 +3334,14 @@ export default function App() {
       max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
     };
 
-    const lines = hasRenderableData
+    const canvasSeries = hasRenderableData
       ? yAssignments.map((assignment) => {
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
         }
 
-        const path = buildSeries(
+        const points = buildSeriesPoints(
           samples,
           xValues,
           assignment.channelId,
@@ -3307,24 +3355,20 @@ export default function App() {
           xTicksData.max,
           basicConfig.plotMode
         );
-        if (!path) {
+        if (points.length < 2) {
           return null;
         }
 
         const channel = getChannelById(assignment.channelId);
         const style = channel?.lineStyle || "solid";
         const thickness = Number(channel?.thickness || 2);
-        return (
-          <path
-            key={`${assignment.channelId}-${assignment.axis}`}
-            d={path}
-            fill="none"
-            stroke={channel?.color || "#2563eb"}
-            strokeWidth={Math.max(1, thickness)}
-            strokeDasharray={dashByStyle[style] || ""}
-            opacity="0.95"
-          />
-        );
+        return {
+          key: `${assignment.channelId}-${assignment.axis}`,
+          points,
+          color: channel?.color || "#2563eb",
+          thickness: Math.max(1, thickness),
+          style
+        };
       }).filter(Boolean)
       : [];
 
@@ -3467,6 +3511,7 @@ export default function App() {
         };
 
     return (
+      <>
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMinYMin meet">
         <defs>
           <clipPath id={plotClipId}>
@@ -3653,7 +3698,6 @@ export default function App() {
           );
         })}
         <g clipPath={`url(#${plotClipId})`}>
-          {lines}
           {statCurves}
         </g>
         {!hasRenderableData ? (
@@ -3668,6 +3712,13 @@ export default function App() {
           </text>
         ) : null}
       </svg>
+      <PlotSeriesCanvas
+        width={width}
+        height={height}
+        padding={padding}
+        series={canvasSeries}
+      />
+      </>
     );
   };
 
