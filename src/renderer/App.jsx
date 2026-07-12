@@ -189,6 +189,18 @@ const commonBaudRates = [
   1500000, 2000000
 ];
 
+const esp32Ch340HighSpeedProfile = {
+  baudRate: 921600,
+  channelCount: 2,
+  samplesPerSecond: 2000,
+  periodMs: 0.5,
+  bufferSeconds: 60,
+  refreshMs: 50,
+  plotMode: "minmax",
+  xWindowSize: 10,
+  serialTimeoutSeconds: 3
+};
+
 const normalizeChannels = (count, previous) => {
   const safeCount = Math.max(1, count);
   const base = createDefaultChannels(safeCount);
@@ -200,6 +212,13 @@ const normalizeChannels = (count, previous) => {
 
 const channelIndex = (channelId) => Number(channelId.replace("val", ""));
 const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
+const isSystemChannelId = (channelId) => /^sys[A-Z]/.test(channelId || "");
+
+const buildRxMetricValues = (stats) => ({
+  sysSps: Number(stats?.sps || 0),
+  sysPeriodMs: Number(stats?.avgMs || 0),
+  sysJitterMs: Number(stats?.jitterMs || 0)
+});
 
 const dashByStyle = {
   solid: "",
@@ -548,28 +567,73 @@ const buildSeries = (
   width,
   padding,
   minX,
-  maxX
+  maxX,
+  plotMode = "normal"
 ) => {
   if (samples.length <= 1) {
     return "";
   }
 
   const spreadX = maxX - minX || 1;
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
 
-  const points = samples.map((sample, sampleIndex) => {
+  const toPoint = (sample, sampleIndex) => {
+    const xValue = xValues[sampleIndex];
     const value = getSampleValue(sample, channelId);
-    if (!Number.isFinite(value)) {
+    if (!Number.isFinite(value) || !Number.isFinite(xValue) || xValue < minX || xValue > maxX) {
       return null;
     }
-    const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
+    const normalizedX = (xValue - minX) / spreadX;
     const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
     return {
-      x: padding.left + normalizedX * (width - padding.left - padding.right),
-      y:
-        height -
-        padding.bottom -
-        normalizedY * (height - padding.top - padding.bottom)
+      x: padding.left + normalizedX * plotWidth,
+      y: height - padding.bottom - normalizedY * plotHeight
     };
+  };
+
+  if (plotMode === "minmax") {
+    const buckets = new Map();
+    samples.forEach((sample, sampleIndex) => {
+      const point = toPoint(sample, sampleIndex);
+      if (!point) {
+        return;
+      }
+
+      const key = Math.floor(point.x);
+      const current = buckets.get(key);
+      if (!current) {
+        buckets.set(key, { first: point, last: point, min: point, max: point });
+        return;
+      }
+
+      current.last = point;
+      if (point.y < current.min.y) {
+        current.min = point;
+      }
+      if (point.y > current.max.y) {
+        current.max = point;
+      }
+    });
+
+    const reduced = [];
+    [...buckets.keys()].sort((a, b) => a - b).forEach((key) => {
+      const bucket = buckets.get(key);
+      [bucket.first, bucket.min, bucket.max, bucket.last]
+        .sort((a, b) => a.x - b.x)
+        .forEach((point) => {
+          const previous = reduced[reduced.length - 1];
+          if (!previous || previous.x !== point.x || previous.y !== point.y) {
+            reduced.push(point);
+          }
+        });
+    });
+
+    return reduced.length >= 2 ? buildPath(reduced) : "";
+  }
+
+  const points = samples.map((sample, sampleIndex) => {
+    return toPoint(sample, sampleIndex);
   }).filter(Boolean);
 
   if (points.length < 2) {
@@ -669,6 +733,15 @@ export default function App() {
   const historyRef = useRef([]);
   const virtualFunctionsRef = useRef([]);
   const rxTimesRef = useRef([]);
+  const totalFramesRef = useRef(0);
+  const latestRxStatsRef = useRef(rxStats);
+  const latestChannelsRef = useRef(channels);
+  const latestVirtualValuesRef = useRef({});
+  const rawLogQueueRef = useRef([]);
+  const uiFlushTimerRef = useRef(null);
+  const pendingDataRefreshRef = useRef(false);
+  const pendingChannelRefreshRef = useRef(false);
+  const pendingVirtualRefreshRef = useRef(false);
   const lastValidFrameAtRef = useRef(null);
   const restoreReadyRef = useRef(false);
 
@@ -705,12 +778,55 @@ export default function App() {
     virtualFunctionsRef.current = virtualFunctions;
   }, [virtualFunctions]);
 
+  useEffect(() => {
+    if (!pendingChannelRefreshRef.current) {
+      latestChannelsRef.current = channels;
+    }
+  }, [channels]);
+
+  useEffect(() => () => {
+    if (uiFlushTimerRef.current) {
+      window.clearTimeout(uiFlushTimerRef.current);
+      uiFlushTimerRef.current = null;
+    }
+  }, []);
+
   const visibleChannels = useMemo(() => {
     if (basicConfig.channelCount <= 0) {
       return channels;
     }
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
+
+  const systemChannels = useMemo(() => [
+    {
+      id: "sysSps",
+      name: "SPS",
+      color: "#0f766e",
+      lineStyle: "solid",
+      thickness: 2,
+      value: Number(rxStats.sps || 0),
+      system: true
+    },
+    {
+      id: "sysPeriodMs",
+      name: "Periodo RX ms",
+      color: "#7c3aed",
+      lineStyle: "dashed",
+      thickness: 2,
+      value: Number(rxStats.avgMs || 0),
+      system: true
+    },
+    {
+      id: "sysJitterMs",
+      name: "Jitter RX ms",
+      color: "#ea580c",
+      lineStyle: "dotted",
+      thickness: 2,
+      value: Number(rxStats.jitterMs || 0),
+      system: true
+    }
+  ], [rxStats.avgMs, rxStats.jitterMs, rxStats.sps]);
 
   const virtualChannels = useMemo(() =>
     virtualFunctions
@@ -727,12 +843,26 @@ export default function App() {
     [virtualFunctions]
   );
 
-  const allChannels = useMemo(() => [...visibleChannels, ...virtualChannels], [visibleChannels, virtualChannels]);
+  const sourceChannels = useMemo(() => [...visibleChannels, ...systemChannels], [visibleChannels, systemChannels]);
+  const allChannels = useMemo(() => [...sourceChannels, ...virtualChannels], [sourceChannels, virtualChannels]);
 
   const virtualFunctionSnapshotKey = useMemo(() =>
     JSON.stringify(virtualFunctions.map(({ value: _value, ...definition }) => definition)),
     [virtualFunctions]
   );
+
+  const serialThroughputEstimate = useMemo(() => {
+    const baud = Math.max(1, Number(baudRate) || 1);
+    const samplesPerSecond = Math.max(1, Number(basicConfig.samplesPerSecond) || 1);
+    const bytesPerSecond = baud / 10;
+    const bytesPerSample = bytesPerSecond / samplesPerSecond;
+    const bufferSamples = Math.max(1, Math.round((Number(basicConfig.bufferSeconds) || 1) * samplesPerSecond));
+    return {
+      bytesPerSecond,
+      bytesPerSample,
+      bufferSamples
+    };
+  }, [baudRate, basicConfig.bufferSeconds, basicConfig.samplesPerSecond]);
 
   const getChannelById = (channelId) => allChannels.find((channel) => channel.id === channelId);
 
@@ -742,6 +872,9 @@ export default function App() {
     }
     if (isPhysicalChannelId(channelId)) {
       return sample.values?.[channelIndex(channelId)];
+    }
+    if (isSystemChannelId(channelId)) {
+      return sample.systemValues?.[channelId];
     }
     return sample.virtualValues?.[channelId];
   };
@@ -814,6 +947,50 @@ export default function App() {
     setMonitorLog((prev) => [...prev.slice(-399), message]);
   };
 
+  const flushPendingUiUpdates = () => {
+    uiFlushTimerRef.current = null;
+
+    if (rawLogQueueRef.current.length) {
+      const queuedLogs = rawLogQueueRef.current.splice(0);
+      const visibleLogs = queuedLogs.slice(-120);
+      setMonitorLog((prev) => [...prev, ...visibleLogs].slice(-400));
+    }
+
+    if (pendingChannelRefreshRef.current && latestChannelsRef.current.length) {
+      pendingChannelRefreshRef.current = false;
+      setChannels(latestChannelsRef.current);
+    }
+
+    if (pendingVirtualRefreshRef.current) {
+      pendingVirtualRefreshRef.current = false;
+      const latestVirtualValues = latestVirtualValuesRef.current;
+      setVirtualFunctions((prev) =>
+        prev.map((definition) => ({
+          ...definition,
+          value: Number.isFinite(latestVirtualValues[definition.id])
+            ? latestVirtualValues[definition.id]
+            : definition.value || 0
+        }))
+      );
+    }
+
+    setRxStats(latestRxStatsRef.current);
+
+    if (pendingDataRefreshRef.current) {
+      pendingDataRefreshRef.current = false;
+      setDataVersion((prev) => prev + 1);
+    }
+  };
+
+  const scheduleUiFlush = () => {
+    if (uiFlushTimerRef.current) {
+      return;
+    }
+
+    const refreshMs = clamp(Number(basicConfig.refreshMs) || 100, 16, 1000);
+    uiFlushTimerRef.current = window.setTimeout(flushPendingUiUpdates, refreshMs);
+  };
+
   const sessionLoggingEnabled = () =>
     Boolean(captureConfig.directory && captureConfig.label?.trim() && captureConfig.useSubfolder);
 
@@ -857,7 +1034,7 @@ export default function App() {
     }));
   };
 
-  const updateReceiveStats = (timestamp) => {
+  const updateReceiveStats = (timestamp, frameCount) => {
     const now = Number(timestamp) || Date.now();
     const windowMs = 5000;
     const times = [...rxTimesRef.current, now].filter((time) => now - time <= windowMs);
@@ -868,13 +1045,15 @@ export default function App() {
       ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - avgMs) ** 2, 0) / intervals.length)
       : 0;
     const spanSeconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 1;
-    setRxStats({
-      frames: historyRef.current.length + 1,
+    const nextStats = {
+      frames: Math.max(0, Number(frameCount) || 0),
       sps: times.length > 1 ? (times.length - 1) / Math.max(0.001, spanSeconds) : 0,
       avgMs,
       jitterMs,
       lastFrameMs: Date.now() - now
-    });
+    };
+    latestRxStatsRef.current = nextStats;
+    return nextStats;
   };
 
   const closeContextMenu = () => {
@@ -886,6 +1065,9 @@ export default function App() {
   };
 
   const updateChannel = (channelId, patch) => {
+    latestChannelsRef.current = latestChannelsRef.current.map((channel) =>
+      channel.id === channelId ? { ...channel, ...patch } : channel
+    );
     setChannels((prev) =>
       prev.map((channel) => (channel.id === channelId ? { ...channel, ...patch } : channel))
     );
@@ -971,7 +1153,7 @@ export default function App() {
   };
 
   const getBlockChannelName = (sourceId) =>
-    visibleChannels.find((channel) => channel.id === sourceId)?.name || "variable";
+    sourceChannels.find((channel) => channel.id === sourceId)?.name || "variable";
 
   const blockToExpression = (block) => {
     if (!block) {
@@ -1022,7 +1204,7 @@ export default function App() {
       return Number.isFinite(Number(block.value)) ? "" : "Un bloque numérico tiene un valor inválido.";
     }
     if (block.type === "variable") {
-      return visibleChannels.some((channel) => channel.id === block.sourceId) ? "" : "Selecciona una variable física válida.";
+      return sourceChannels.some((channel) => channel.id === block.sourceId) ? "" : "Selecciona una variable válida.";
     }
     if (unaryExpressionFunctions[block.type]) {
       return validateFunctionBlock(block.input);
@@ -1030,8 +1212,8 @@ export default function App() {
     if (binaryBlockSymbols[block.type]) {
       return validateFunctionBlock(block.left) || validateFunctionBlock(block.right);
     }
-    if (!visibleChannels.some((channel) => channel.id === block.sourceId)) {
-      return "Selecciona una variable física válida.";
+    if (!sourceChannels.some((channel) => channel.id === block.sourceId)) {
+      return "Selecciona una variable válida.";
     }
     const operation = functionBlockOperations.find((item) => item.id === block.type);
     if (operation?.needsWindow && (!Number.isFinite(Number(block.windowValue)) || Number(block.windowValue) <= 0)) {
@@ -1055,7 +1237,7 @@ export default function App() {
     if (definition?.block) {
       return blockToExpression(definition.block);
     }
-    const source = visibleChannels.find((channel) => channel.id === definition.sourceId);
+    const source = sourceChannels.find((channel) => channel.id === definition.sourceId);
     const operation = virtualOperations.find((item) => item.id === definition.operation) || virtualOperations[0];
     const windowText = getFunctionWindowLabel(definition);
     return operation.formula(source?.name || "variable", windowText);
@@ -1080,7 +1262,7 @@ export default function App() {
 
   const expressionToJs = (definition) => {
     let expression = draftExpression(definition);
-    const channelsByName = new Map(visibleChannels.map((channel) => [channel.name, channel.id]));
+    const channelsByName = new Map(sourceChannels.map((channel) => [channel.name, channel.id]));
     expression = expression.replace(/\[([^\]]+)\]/g, (_match, name) => {
       const channelId = channelsByName.get(name.trim());
       if (!channelId) {
@@ -1268,7 +1450,7 @@ export default function App() {
   };
 
   const openFunctionBuilder = (definition = null) => {
-    const firstSource = visibleChannels[0]?.id || "val0";
+    const firstSource = sourceChannels[0]?.id || "val0";
     const defaultBlock = createFunctionBlock("rangeAbs", firstSource);
     setFunctionDraft(definition ? {
       ...definition,
@@ -2000,6 +2182,30 @@ export default function App() {
     updateBasicConfig("samplesPerSecond", Number((1000 / periodMs).toFixed(2)));
   };
 
+  const applyEsp32Ch340HighSpeedProfile = () => {
+    setBaudRate(esp32Ch340HighSpeedProfile.baudRate);
+    setBasicConfig((prev) => ({
+      ...prev,
+      channelCount: esp32Ch340HighSpeedProfile.channelCount,
+      samplesPerSecond: esp32Ch340HighSpeedProfile.samplesPerSecond,
+      periodMs: esp32Ch340HighSpeedProfile.periodMs,
+      bufferSeconds: esp32Ch340HighSpeedProfile.bufferSeconds,
+      refreshMs: esp32Ch340HighSpeedProfile.refreshMs,
+      plotMode: esp32Ch340HighSpeedProfile.plotMode,
+      includeTimestamp: false,
+      minValidFrames: 1
+    }));
+    updateAppSettings({ serialTimeoutSeconds: esp32Ch340HighSpeedProfile.serialTimeoutSeconds });
+    setPlots((prev) =>
+      prev.map((plot) => ({
+        ...plot,
+        xMode: "window",
+        xWindowSize: esp32Ch340HighSpeedProfile.xWindowSize
+      }))
+    );
+    setConfigMessage("Perfil ESP32/CH340 aplicado: 921600 baud, 2 kSPS, buffer 60 s y ploteo Min/Max.");
+  };
+
   const refreshPorts = async () => {
     try {
       const nextPorts = await window.jwSerial.listPorts();
@@ -2076,7 +2282,18 @@ export default function App() {
   const clearBuffer = () => {
     historyRef.current = [];
     rxTimesRef.current = [];
-    setRxStats({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
+    totalFramesRef.current = 0;
+    latestRxStatsRef.current = { frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null };
+    latestVirtualValuesRef.current = {};
+    rawLogQueueRef.current = [];
+    pendingDataRefreshRef.current = false;
+    pendingChannelRefreshRef.current = false;
+    pendingVirtualRefreshRef.current = false;
+    if (uiFlushTimerRef.current) {
+      window.clearTimeout(uiFlushTimerRef.current);
+      uiFlushTimerRef.current = null;
+    }
+    setRxStats(latestRxStatsRef.current);
     setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
     setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
@@ -2088,11 +2305,11 @@ export default function App() {
       return;
     }
 
-    const header = ["timestamp", "xValue", ...visibleChannels.map((channel) => channel.name), ...virtualChannels.map((channel) => channel.name)];
+    const header = ["timestamp", "xValue", ...sourceChannels.map((channel) => channel.name), ...virtualChannels.map((channel) => channel.name)];
     const rows = historyRef.current.map((item) => [
       item.timestamp,
       item.xValue,
-      ...visibleChannels.map((channel) => getSampleValue(item, channel.id) ?? ""),
+      ...sourceChannels.map((channel) => getSampleValue(item, channel.id) ?? ""),
       ...virtualChannels.map((channel) => getSampleValue(item, channel.id) ?? "")
     ]);
     const csv = [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
@@ -2688,23 +2905,25 @@ export default function App() {
       const channelCount =
         basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
 
-      setChannels((prev) => {
-        const normalized = normalizeChannels(channelCount, prev);
-        return normalized.map((channel, index) => ({
-          ...channel,
-          name: frame.names?.[index] || channel.name,
-          value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
-        }));
-      });
+      const normalizedChannels = normalizeChannels(channelCount, latestChannelsRef.current);
+      latestChannelsRef.current = normalizedChannels.map((channel, index) => ({
+        ...channel,
+        name: frame.names?.[index] || channel.name,
+        value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
+      }));
+      pendingChannelRefreshRef.current = true;
 
       const maxSamples = Math.max(
         1,
         Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
       );
+      totalFramesRef.current += 1;
+      const nextStats = updateReceiveStats(frame.timestamp, totalFramesRef.current);
       const historyEntry = {
         timestamp: frame.timestamp,
         xValue,
         values: incomingValues.slice(0, channelCount),
+        systemValues: buildRxMetricValues(nextStats),
         virtualValues: {}
       };
       historyRef.current.push(historyEntry);
@@ -2718,27 +2937,30 @@ export default function App() {
           }
         });
         historyEntry.virtualValues = nextVirtualValues;
-        setVirtualFunctions((prev) =>
-          prev.map((definition) => ({
-            ...definition,
-            value: Number.isFinite(nextVirtualValues[definition.id])
-              ? nextVirtualValues[definition.id]
-              : definition.value || 0
-          }))
-        );
+        latestVirtualValuesRef.current = nextVirtualValues;
+        pendingVirtualRefreshRef.current = true;
       }
-      updateReceiveStats(frame.timestamp);
-      if (historyRef.current.length > maxSamples) {
+      const trimSlack = Math.max(
+        1000,
+        Math.round(Number(basicConfig.samplesPerSecond) || 100),
+        Math.round(maxSamples * 0.02)
+      );
+      if (historyRef.current.length > maxSamples + trimSlack) {
         historyRef.current = historyRef.current.slice(-maxSamples);
       }
-      setDataVersion((prev) => prev + 1);
+      pendingDataRefreshRef.current = true;
+      scheduleUiFlush();
     });
 
     const unsubscribeRaw = window.jwSerial.onRawLine((line) => {
       if (!line?.trim()) {
         return;
       }
-      appendLog(`RX > ${line}`);
+      rawLogQueueRef.current.push(`RX > ${line}`);
+      if (rawLogQueueRef.current.length > 500) {
+        rawLogQueueRef.current = rawLogQueueRef.current.slice(-500);
+      }
+      scheduleUiFlush();
     });
 
     const unsubscribeStatus = window.jwSerial.onStatus((status) => {
@@ -3022,7 +3244,8 @@ export default function App() {
           width,
           padding,
           xTicksData.min,
-          xTicksData.max
+          xTicksData.max,
+          basicConfig.plotMode
         );
         if (!path) {
           return null;
@@ -3591,7 +3814,7 @@ export default function App() {
   };
 
   const renderFunctionVariableSlot = (block, path) => {
-    const channel = visibleChannels.find((item) => item.id === block.sourceId) || null;
+    const channel = sourceChannels.find((item) => item.id === block.sourceId) || null;
     return (
       <span
         className={`function-slot ${channel ? "function-slot--variable" : "function-slot--empty"}`}
@@ -3643,7 +3866,7 @@ export default function App() {
     }
 
     if (block.type === "variable") {
-      const channel = visibleChannels.find((item) => item.id === block.sourceId) || visibleChannels[0];
+      const channel = sourceChannels.find((item) => item.id === block.sourceId) || sourceChannels[0];
       return (
         <span className="function-block function-block--variable" {...dragProps}>
           {channel ? <span className="function-palette__dot" style={{ background: channel.color }} /> : null}
@@ -3815,6 +4038,27 @@ export default function App() {
                   draggable
                   onDragStart={(event) => handleChannelDragStart(event, channel.id)}
                   onContextMenu={(event) => openVariableMenu(event, channel.id)}
+                >
+                  <span
+                    className="channel-color"
+                    style={{ backgroundColor: channel.color }}
+                  />
+                  <span className="channel-name">{channel.name}</span>
+                  <span className="channel-value">{channel.value.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="sidebar__section">
+            <h2>Métricas</h2>
+            <div className="channel-table">
+              {systemChannels.map((channel) => (
+                <div
+                  className="channel-row channel-row--system"
+                  key={channel.id}
+                  draggable
+                  onDragStart={(event) => handleChannelDragStart(event, channel.id)}
                 >
                   <span
                     className="channel-color"
@@ -4332,6 +4576,21 @@ export default function App() {
               {modal === "config" ? (
                 <div className="modal__form modal__section">
                   <h4>Básica</h4>
+                  <div className="performance-profile">
+                    <div>
+                      <strong>ESP32 + CH340 alto rendimiento</strong>
+                      <span>
+                        {serialThroughputEstimate.bytesPerSample.toFixed(1)} bytes/muestra disponibles a {baudRate} baud.
+                      </span>
+                      <span>
+                        Buffer estimado: {serialThroughputEstimate.bufferSamples.toLocaleString()} muestras.
+                      </span>
+                    </div>
+                    <button type="button" className="button-primary" onClick={applyEsp32Ch340HighSpeedProfile}>
+                      Aplicar 2 kSPS
+                    </button>
+                  </div>
+                  {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
                   <label>
                     Canales por trama (0 = auto)
                     <input
@@ -4677,7 +4936,7 @@ export default function App() {
                         <div className="function-palette__group">
                           <span>Variables</span>
                           <div className="function-palette__blocks">
-                            {visibleChannels.map((channel) => renderPaletteBlock({
+                            {sourceChannels.map((channel) => renderPaletteBlock({
                               kind: "variable",
                               sourceId: channel.id,
                               label: channel.name,
@@ -4950,6 +5209,15 @@ export default function App() {
             const channel = getChannelById(variableMenu.channelId);
             if (!channel) {
               return <span>No disponible</span>;
+            }
+            if (channel.system) {
+              return (
+                <>
+                  <span>{channel.name}</span>
+                  <span>{channel.value.toFixed(2)}</span>
+                  <button type="button" onClick={closeVariableMenu}>Cerrar</button>
+                </>
+              );
             }
             const updateChannelStyle = channel.virtual ? updateVirtualFunction : updateChannel;
 
