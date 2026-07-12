@@ -588,45 +588,36 @@ const buildSeriesPoints = (
 
   if (plotMode === "minmax") {
     const bucketCount = Math.max(1, Math.ceil(plotWidth) + 1);
-    const buckets = new Array(bucketCount);
+    const bucketMinY = new Float32Array(bucketCount);
+    const bucketMaxY = new Float32Array(bucketCount);
+    bucketMinY.fill(Number.POSITIVE_INFINITY);
+    bucketMaxY.fill(Number.NEGATIVE_INFINITY);
     samples.forEach((sample, sampleIndex) => {
-      const point = toPoint(sample, sampleIndex);
-      if (!point) {
+      const xValue = xValues[sampleIndex];
+      const value = getSampleValue(sample, channelId);
+      if (!Number.isFinite(value) || !Number.isFinite(xValue) || xValue < minX || xValue > maxX) {
         return;
       }
-
-      const key = clamp(Math.floor(point.x - padding.left), 0, bucketCount - 1);
-      const current = buckets[key];
-      if (!current) {
-        buckets[key] = { first: point, last: point, min: point, max: point };
-        return;
-      }
-
-      current.last = point;
-      if (point.y < current.min.y) {
-        current.min = point;
-      }
-      if (point.y > current.max.y) {
-        current.max = point;
-      }
+      const key = clamp(Math.floor(((xValue - minX) / spreadX) * plotWidth), 0, bucketCount - 1);
+      const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
+      const y = height - padding.bottom - normalizedY * plotHeight;
+      bucketMinY[key] = Math.min(bucketMinY[key], y);
+      bucketMaxY[key] = Math.max(bucketMaxY[key], y);
     });
 
-    const reduced = [];
-    buckets.forEach((bucket) => {
-      if (!bucket) {
-        return;
+    const coordinates = new Float32Array(bucketCount * 4);
+    let coordinateIndex = 0;
+    for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+      if (!Number.isFinite(bucketMinY[bucketIndex])) {
+        continue;
       }
-      [bucket.first, bucket.min, bucket.max, bucket.last]
-        .sort((a, b) => a.y - b.y)
-        .forEach((point) => {
-          const previous = reduced[reduced.length - 1];
-          if (!previous || previous.x !== point.x || previous.y !== point.y) {
-            reduced.push(point);
-          }
-        });
-    });
-
-    return reduced.length >= 2 ? reduced : [];
+      const x = padding.left + bucketIndex + 0.5;
+      coordinates[coordinateIndex++] = x;
+      coordinates[coordinateIndex++] = bucketMinY[bucketIndex];
+      coordinates[coordinateIndex++] = x;
+      coordinates[coordinateIndex++] = bucketMaxY[bucketIndex];
+    }
+    return coordinateIndex >= 4 ? coordinates.subarray(0, coordinateIndex) : [];
   }
 
   const points = samples.map((sample, sampleIndex) => {
@@ -637,7 +628,13 @@ const buildSeriesPoints = (
     return [];
   }
 
-  return downsamplePointsByPixel(points);
+  const reducedPoints = downsamplePointsByPixel(points);
+  const coordinates = new Float32Array(reducedPoints.length * 2);
+  reducedPoints.forEach((point, index) => {
+    coordinates[index * 2] = point.x;
+    coordinates[index * 2 + 1] = point.y;
+  });
+  return coordinates;
 };
 
 const PlotSeriesCanvas = ({ width, height, padding, series }) => {
@@ -649,8 +646,12 @@ const PlotSeriesCanvas = ({ width, height, padding, series }) => {
       return;
     }
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.max(1, Math.round(width * pixelRatio));
-    canvas.height = Math.max(1, Math.round(height * pixelRatio));
+    const backingWidth = Math.max(1, Math.round(width * pixelRatio));
+    const backingHeight = Math.max(1, Math.round(height * pixelRatio));
+    if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+      canvas.width = backingWidth;
+      canvas.height = backingHeight;
+    }
     const context = canvas.getContext("2d");
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, width, height);
@@ -665,13 +666,13 @@ const PlotSeriesCanvas = ({ width, height, padding, series }) => {
     context.clip();
 
     series.forEach(({ points, color, thickness, style }) => {
-      if (points.length < 2) {
+      if (points.length < 4) {
         return;
       }
       context.beginPath();
-      context.moveTo(points[0].x, points[0].y);
-      for (let index = 1; index < points.length; index += 1) {
-        context.lineTo(points[index].x, points[index].y);
+      context.moveTo(points[0], points[1]);
+      for (let index = 2; index < points.length; index += 2) {
+        context.lineTo(points[index], points[index + 1]);
       }
       context.strokeStyle = color;
       context.lineWidth = thickness;
@@ -3208,7 +3209,17 @@ export default function App() {
     const padding = { top: 20, right: 74, bottom: 40, left: 74 };
     const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
 
-    const xValues = samples.map((sample, index) => getPlotXValue(plot, sample, index));
+    const xAssignment = plot.assignments.find((item) => item.axis === "x");
+    const xValues = samples.map((sample, index) => {
+      if (xAssignment) {
+        const value = getSampleValue(sample, xAssignment.channelId);
+        return Number.isFinite(value) ? value : index;
+      }
+      if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
+        return sample.xValue;
+      }
+      return index;
+    });
     const yScaleSamples = getVisibleSamplesForPlot(plot, samples);
 
     const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
