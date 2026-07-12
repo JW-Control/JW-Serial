@@ -701,6 +701,7 @@ export default function App() {
   const [templateConfirm, setTemplateConfirm] = useState(null);
   const [eventText, setEventText] = useState("");
   const [rxStats, setRxStats] = useState({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
+  const [plotFps, setPlotFps] = useState(0);
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
@@ -739,6 +740,7 @@ export default function App() {
   const latestVirtualValuesRef = useRef({});
   const rawLogQueueRef = useRef([]);
   const uiFlushTimerRef = useRef(null);
+  const plotPaintCountRef = useRef(0);
   const pendingDataRefreshRef = useRef(false);
   const pendingChannelRefreshRef = useRef(false);
   const pendingVirtualRefreshRef = useRef(false);
@@ -1711,7 +1713,13 @@ export default function App() {
   };
 
   const getSamplesForPlot = (plot) => {
-    const allSamples = historyRef.current;
+    const visibleBufferSamples = Math.max(
+      1,
+      Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
+    );
+    const allSamples = historyRef.current.length > visibleBufferSamples
+      ? historyRef.current.slice(-visibleBufferSamples)
+      : historyRef.current;
     const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
     return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
   };
@@ -3086,6 +3094,30 @@ export default function App() {
 
 
   useEffect(() => {
+    if (activeTab !== "plotter" || dataVersion === 0) {
+      return undefined;
+    }
+    const paintFrame = window.requestAnimationFrame(() => {
+      plotPaintCountRef.current += 1;
+    });
+    return () => window.cancelAnimationFrame(paintFrame);
+  }, [activeTab, dataVersion]);
+
+  useEffect(() => {
+    let previousCount = plotPaintCountRef.current;
+    let previousTime = performance.now();
+    const ticker = window.setInterval(() => {
+      const now = performance.now();
+      const count = plotPaintCountRef.current;
+      const elapsedSeconds = Math.max(0.001, (now - previousTime) / 1000);
+      setPlotFps(activeTab === "plotter" ? (count - previousCount) / elapsedSeconds : 0);
+      previousCount = count;
+      previousTime = now;
+    }, 1000);
+    return () => window.clearInterval(ticker);
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!axisDrag) {
       return undefined;
     }
@@ -3116,9 +3148,7 @@ export default function App() {
   }, [plotResize]);
 
   const renderPlot = (plot) => {
-    const allSamples = historyRef.current;
-    const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
-    const samples = plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+    const samples = getSamplesForPlot(plot);
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = Math.max(520, plotWidths[plot.id] || 1200);
     const height = Math.max(180, layoutHeight - 88);
@@ -4050,6 +4080,7 @@ export default function App() {
               <span>{rxStats.sps.toFixed(1)} SPS</span>
               <span>{rxStats.avgMs ? `${rxStats.avgMs.toFixed(1)} ms` : "-- ms"}</span>
               <span>J {rxStats.jitterMs.toFixed(1)} ms</span>
+              <span>{plotFps.toFixed(1)} FPS</span>
             </div>
           </section>
 
