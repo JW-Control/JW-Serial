@@ -19,6 +19,9 @@ let mainWindow = null;
 let activePort = null;
 let readBuffer = "";
 let validFrameStreak = 0;
+let pendingFrames = [];
+let pendingRawLines = [];
+let serialBatchTimer = null;
 let portConfig = {
   expectedChannels: 0,
   minValidFrames: 1,
@@ -33,6 +36,24 @@ const emitToRenderer = (channel, payload) => {
     return;
   }
   mainWindow.webContents.send(channel, payload);
+};
+
+const flushSerialBatch = () => {
+  serialBatchTimer = null;
+  if (pendingRawLines.length) {
+    emitToRenderer("serial:raw-lines", pendingRawLines);
+    pendingRawLines = [];
+  }
+  if (pendingFrames.length) {
+    emitToRenderer("serial:frames", pendingFrames);
+    pendingFrames = [];
+  }
+};
+
+const scheduleSerialBatch = () => {
+  if (!serialBatchTimer) {
+    serialBatchTimer = setTimeout(flushSerialBatch, 16);
+  }
 };
 
 const normalizeSerialFilterPatterns = (patterns) =>
@@ -234,7 +255,7 @@ const handleIncomingChunk = (chunk) => {
   readBuffer = lines.pop() || "";
 
   lines.forEach((line) => {
-    emitToRenderer("serial:raw-line", line);
+    pendingRawLines.push(line);
 
     if (!shouldAcceptSerialLine(line.trim())) {
       return;
@@ -259,15 +280,23 @@ const handleIncomingChunk = (chunk) => {
       return;
     }
 
-    emitToRenderer("serial:frame", {
+    pendingFrames.push({
       ...parsed,
       timestamp: Date.now(),
       includeTimestamp: portConfig.includeTimestamp
     });
   });
+
+  if (lines.length) {
+    scheduleSerialBatch();
+  }
 };
 
 const cleanupPort = async () => {
+  if (serialBatchTimer) {
+    clearTimeout(serialBatchTimer);
+  }
+  flushSerialBatch();
   if (!activePort) {
     return;
   }

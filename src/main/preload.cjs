@@ -13,15 +13,15 @@ contextBridge.exposeInMainWorld("jwSerial", {
   appendSessionEvent: (options) => ipcRenderer.invoke("session:append-event", options),
   capturePlot: (options) => ipcRenderer.invoke("capture:plot", options),
   savePlotImage: (options) => ipcRenderer.invoke("capture:save-plot-image", options),
-  onFrame: (handler) => {
+  onFrames: (handler) => {
     const wrapped = (_event, payload) => handler(payload);
-    ipcRenderer.on("serial:frame", wrapped);
-    return () => ipcRenderer.removeListener("serial:frame", wrapped);
+    ipcRenderer.on("serial:frames", wrapped);
+    return () => ipcRenderer.removeListener("serial:frames", wrapped);
   },
-  onRawLine: (handler) => {
+  onRawLines: (handler) => {
     const wrapped = (_event, payload) => handler(payload);
-    ipcRenderer.on("serial:raw-line", wrapped);
-    return () => ipcRenderer.removeListener("serial:raw-line", wrapped);
+    ipcRenderer.on("serial:raw-lines", wrapped);
+    return () => ipcRenderer.removeListener("serial:raw-lines", wrapped);
   },
   onStatus: (handler) => {
     const wrapped = (_event, payload) => handler(payload);

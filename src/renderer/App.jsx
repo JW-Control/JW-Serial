@@ -732,7 +732,7 @@ export default function App() {
   const y2FollowStateRef = useRef(new Map());
   const historyRef = useRef([]);
   const virtualFunctionsRef = useRef([]);
-  const rxTimesRef = useRef([]);
+  const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
   const totalFramesRef = useRef(0);
   const latestRxStatsRef = useRef(rxStats);
   const latestChannelsRef = useRef(channels);
@@ -1037,17 +1037,37 @@ export default function App() {
   const updateReceiveStats = (timestamp, frameCount) => {
     const now = Number(timestamp) || Date.now();
     const windowMs = 5000;
-    const times = [...rxTimesRef.current, now].filter((time) => now - time <= windowMs);
-    rxTimesRef.current = times;
-    const intervals = times.slice(1).map((time, index) => time - times[index]);
-    const avgMs = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
-    const jitterMs = intervals.length
-      ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - avgMs) ** 2, 0) / intervals.length)
+    const window = rxStatsWindowRef.current;
+    const previous = window.times[window.times.length - 1];
+    if (previous !== undefined) {
+      const interval = now - previous;
+      window.intervalSum += interval;
+      window.intervalSquareSum += interval * interval;
+    }
+    window.times.push(now);
+
+    while (window.head + 1 < window.times.length && now - window.times[window.head] > windowMs) {
+      const expiredInterval = window.times[window.head + 1] - window.times[window.head];
+      window.intervalSum -= expiredInterval;
+      window.intervalSquareSum -= expiredInterval * expiredInterval;
+      window.head += 1;
+    }
+    if (window.head > 8192 && window.head > window.times.length / 2) {
+      window.times = window.times.slice(window.head);
+      window.head = 0;
+    }
+
+    const sampleCount = window.times.length - window.head;
+    const intervalCount = Math.max(0, sampleCount - 1);
+    const avgMs = intervalCount ? window.intervalSum / intervalCount : 0;
+    const variance = intervalCount
+      ? Math.max(0, window.intervalSquareSum / intervalCount - avgMs * avgMs)
       : 0;
-    const spanSeconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 1;
+    const jitterMs = Math.sqrt(variance);
+    const spanSeconds = intervalCount ? (now - window.times[window.head]) / 1000 : 1;
     const nextStats = {
       frames: Math.max(0, Number(frameCount) || 0),
-      sps: times.length > 1 ? (times.length - 1) / Math.max(0.001, spanSeconds) : 0,
+      sps: intervalCount ? intervalCount / Math.max(0.001, spanSeconds) : 0,
       avgMs,
       jitterMs,
       lastFrameMs: Date.now() - now
@@ -2281,7 +2301,7 @@ export default function App() {
 
   const clearBuffer = () => {
     historyRef.current = [];
-    rxTimesRef.current = [];
+    rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
     totalFramesRef.current = 0;
     latestRxStatsRef.current = { frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null };
     latestVirtualValuesRef.current = {};
@@ -2882,15 +2902,15 @@ export default function App() {
 
   useEffect(() => {
     if (
-      !window.jwSerial?.onFrame ||
-      !window.jwSerial?.onRawLine ||
+      !window.jwSerial?.onFrames ||
+      !window.jwSerial?.onRawLines ||
       !window.jwSerial?.onStatus
     ) {
       appendLog("SYS > API serial no disponible en renderer (preload).");
       return undefined;
     }
 
-    const unsubscribeFrame = window.jwSerial.onFrame((frame) => {
+    const processFrame = (frame) => {
       if (!shouldAcceptSerialLine(frame.raw, appSettings.serialFilterMode, appSettings.serialFilterPatterns)) {
         return;
       }
@@ -2949,14 +2969,19 @@ export default function App() {
         historyRef.current = historyRef.current.slice(-maxSamples);
       }
       pendingDataRefreshRef.current = true;
+    };
+
+    const unsubscribeFrames = window.jwSerial.onFrames((frames) => {
+      frames.forEach(processFrame);
       scheduleUiFlush();
     });
 
-    const unsubscribeRaw = window.jwSerial.onRawLine((line) => {
-      if (!line?.trim()) {
-        return;
-      }
-      rawLogQueueRef.current.push(`RX > ${line}`);
+    const unsubscribeRawLines = window.jwSerial.onRawLines((lines) => {
+      lines.forEach((line) => {
+        if (line?.trim()) {
+          rawLogQueueRef.current.push(`RX > ${line}`);
+        }
+      });
       if (rawLogQueueRef.current.length > 500) {
         rawLogQueueRef.current = rawLogQueueRef.current.slice(-500);
       }
@@ -2979,8 +3004,8 @@ export default function App() {
     });
 
     return () => {
-      unsubscribeFrame?.();
-      unsubscribeRaw?.();
+      unsubscribeFrames?.();
+      unsubscribeRawLines?.();
       unsubscribeStatus?.();
     };
   }, [basicConfig, isPaused, appSettings.serialFilterMode, appSettings.serialFilterPatterns]);
