@@ -214,10 +214,9 @@ const channelIndex = (channelId) => Number(channelId.replace("val", ""));
 const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
 const isSystemChannelId = (channelId) => /^sys[A-Z]/.test(channelId || "");
 
-const buildRxMetricValues = (stats) => ({
+const buildRxMetricValues = (stats, fps = 0) => ({
   sysSps: Number(stats?.sps || 0),
-  sysPeriodMs: Number(stats?.avgMs || 0),
-  sysJitterMs: Number(stats?.jitterMs || 0)
+  sysFps: Number(fps || 0)
 });
 
 const axisLabels = {
@@ -785,6 +784,7 @@ export default function App() {
   const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
   const totalFramesRef = useRef(0);
   const latestRxStatsRef = useRef(rxStats);
+  const latestPlotFpsRef = useRef(plotFps);
   const latestChannelsRef = useRef(channels);
   const latestVirtualValuesRef = useRef({});
   const rawLogQueueRef = useRef([]);
@@ -831,6 +831,10 @@ export default function App() {
   }, [virtualFunctions]);
 
   useEffect(() => {
+    latestPlotFpsRef.current = plotFps;
+  }, [plotFps]);
+
+  useEffect(() => {
     if (!pendingChannelRefreshRef.current) {
       latestChannelsRef.current = channels;
     }
@@ -861,24 +865,15 @@ export default function App() {
       system: true
     },
     {
-      id: "sysPeriodMs",
-      name: "Periodo RX ms",
+      id: "sysFps",
+      name: "FPS",
       color: "#7c3aed",
-      lineStyle: "dashed",
+      lineStyle: "solid",
       thickness: 2,
-      value: Number(rxStats.avgMs || 0),
-      system: true
-    },
-    {
-      id: "sysJitterMs",
-      name: "Jitter RX ms",
-      color: "#ea580c",
-      lineStyle: "dotted",
-      thickness: 2,
-      value: Number(rxStats.jitterMs || 0),
+      value: Number(plotFps || 0),
       system: true
     }
-  ], [rxStats.avgMs, rxStats.jitterMs, rxStats.sps]);
+  ], [plotFps, rxStats.sps]);
 
   const virtualChannels = useMemo(() =>
     virtualFunctions
@@ -3005,7 +3000,7 @@ export default function App() {
         timestamp: frame.timestamp,
         xValue,
         values: incomingValues.slice(0, channelCount),
-        systemValues: buildRxMetricValues(nextStats),
+        systemValues: buildRxMetricValues(nextStats, latestPlotFpsRef.current),
         virtualValues: {}
       };
       historyRef.current.push(historyEntry);
@@ -4145,8 +4140,6 @@ export default function App() {
             </div>
             <div className="rx-stats">
               <span>{rxStats.sps.toFixed(1)} SPS</span>
-              <span>{rxStats.avgMs ? `${rxStats.avgMs.toFixed(1)} ms` : "-- ms"}</span>
-              <span>J {rxStats.jitterMs.toFixed(1)} ms</span>
               <span>{plotFps.toFixed(1)} FPS</span>
             </div>
           </section>
