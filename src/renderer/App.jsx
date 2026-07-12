@@ -740,6 +740,7 @@ export default function App() {
   const latestVirtualValuesRef = useRef({});
   const rawLogQueueRef = useRef([]);
   const uiFlushTimerRef = useRef(null);
+  const lastUiFlushAtRef = useRef(0);
   const plotPaintCountRef = useRef(0);
   const pendingDataRefreshRef = useRef(false);
   const pendingChannelRefreshRef = useRef(false);
@@ -951,6 +952,7 @@ export default function App() {
 
   const flushPendingUiUpdates = () => {
     uiFlushTimerRef.current = null;
+    lastUiFlushAtRef.current = performance.now();
 
     if (rawLogQueueRef.current.length) {
       const queuedLogs = rawLogQueueRef.current.splice(0);
@@ -990,7 +992,9 @@ export default function App() {
     }
 
     const refreshMs = clamp(Number(basicConfig.refreshMs) || 100, 16, 1000);
-    uiFlushTimerRef.current = window.setTimeout(flushPendingUiUpdates, refreshMs);
+    const elapsedMs = performance.now() - lastUiFlushAtRef.current;
+    const delayMs = Math.max(0, refreshMs - elapsedMs);
+    uiFlushTimerRef.current = window.setTimeout(flushPendingUiUpdates, delayMs);
   };
 
   const sessionLoggingEnabled = () =>
@@ -2321,6 +2325,7 @@ export default function App() {
       window.clearTimeout(uiFlushTimerRef.current);
       uiFlushTimerRef.current = null;
     }
+    lastUiFlushAtRef.current = 0;
     setRxStats(latestRxStatsRef.current);
     setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
