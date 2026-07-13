@@ -1836,7 +1836,9 @@ export default function App() {
   };
 
   const getLodSamplesForPlot = (plot, rawSamples, width) => {
-    const targetSamples = Math.max(2048, Math.ceil(width * 6));
+    const channelIds = [...new Set(plot.assignments.map((assignment) => assignment.channelId))];
+    const targetGroups = Math.max(256, Math.ceil(width));
+    const targetSamples = Math.max(2048, targetGroups * Math.max(1, channelIds.length) * 2);
     if (rawSamples.length <= targetSamples) {
       return rawSamples;
     }
@@ -1847,34 +1849,51 @@ export default function App() {
       return rawSamples;
     }
 
-    const channelIds = [...new Set(plot.assignments.map((assignment) => assignment.channelId))];
     const selected = new Map([
       [firstSequence, rawSamples[0]],
       [lastSequence, rawSamples[rawSamples.length - 1]]
     ]);
-    const includeBlock = (block) => {
-      if (!block || block.endSequence < firstSequence || block.startSequence > lastSequence) {
-        return;
-      }
-      channelIds.forEach((channelId) => {
-        const extrema = block.extrema[channelId];
-        [extrema?.minSample, extrema?.maxSample].forEach((candidate) => {
-          if (candidate?.sequence >= firstSequence && candidate.sequence <= lastSequence) {
-            selected.set(candidate.sequence, candidate);
-          }
-        });
-      });
-    };
-
     const lod = lodBlocksRef.current;
+    const visibleBlocks = [];
     for (let index = lod.head; index < lod.blocks.length; index += 1) {
       const block = lod.blocks[index];
       if (block.startSequence > lastSequence) {
         break;
       }
-      includeBlock(block);
+      if (block.endSequence >= firstSequence) {
+        visibleBlocks.push(block);
+      }
     }
-    includeBlock(lod.current);
+    if (lod.current?.endSequence >= firstSequence && lod.current.startSequence <= lastSequence) {
+      visibleBlocks.push(lod.current);
+    }
+
+    const blocksPerGroup = Math.max(1, Math.ceil(visibleBlocks.length / targetGroups));
+    for (let groupStart = 0; groupStart < visibleBlocks.length; groupStart += blocksPerGroup) {
+      const groupEnd = Math.min(visibleBlocks.length, groupStart + blocksPerGroup);
+      channelIds.forEach((channelId) => {
+        let minValue = Number.POSITIVE_INFINITY;
+        let maxValue = Number.NEGATIVE_INFINITY;
+        let minSample = null;
+        let maxSample = null;
+        for (let index = groupStart; index < groupEnd; index += 1) {
+          const extrema = visibleBlocks[index].extrema[channelId];
+          if (extrema?.min < minValue) {
+            minValue = extrema.min;
+            minSample = extrema.minSample;
+          }
+          if (extrema?.max > maxValue) {
+            maxValue = extrema.max;
+            maxSample = extrema.maxSample;
+          }
+        }
+        [minSample, maxSample].forEach((candidate) => {
+          if (candidate?.sequence >= firstSequence && candidate.sequence <= lastSequence) {
+            selected.set(candidate.sequence, candidate);
+          }
+        });
+      });
+    }
     return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
   };
 
