@@ -647,7 +647,14 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     const backingWidth = Math.max(1, Math.round(width * pixelRatio));
     const verticalCssPixels = Math.min(height, 420);
-    const backingHeight = Math.max(1, Math.round(verticalCssPixels * pixelRatio));
+    // Never upscale the canvas vertically: it makes axis text blurry and also
+    // quantizes plot coordinates. Keep at least 1 backing pixel per CSS pixel,
+    // while retaining extra device-pixel density only within the performance cap.
+    const backingHeight = Math.max(
+      1,
+      Math.round(height),
+      Math.round(verticalCssPixels * pixelRatio)
+    );
     if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
       canvas.width = backingWidth;
       canvas.height = backingHeight;
