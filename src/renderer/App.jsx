@@ -631,8 +631,13 @@ const buildSeriesPoints = (
   return coordinates;
 };
 
-const PlotSeriesCanvas = ({ width, height, padding, series }) => {
+const PlotSeriesCanvas = ({ width, height, padding, getSeries, refreshMs, onPaint }) => {
   const canvasRef = useRef(null);
+  const getSeriesRef = useRef(getSeries);
+  const onPaintRef = useRef(onPaint);
+
+  getSeriesRef.current = getSeries;
+  onPaintRef.current = onPaint;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -648,42 +653,67 @@ const PlotSeriesCanvas = ({ width, height, padding, series }) => {
       canvas.height = backingHeight;
     }
     const context = canvas.getContext("2d");
-    context.setTransform(
-      backingWidth / width,
-      0,
-      0,
-      backingHeight / height,
-      0,
-      0
-    );
-    context.clearRect(0, 0, width, height);
-    context.save();
-    context.beginPath();
-    context.rect(
-      padding.left,
-      padding.top,
-      width - padding.left - padding.right,
-      height - padding.top - padding.bottom
-    );
-    context.clip();
+    const frameInterval = clamp(Number(refreshMs) || 16, 16, 1000);
+    let animationFrame = 0;
+    let lastDrawAt = 0;
 
-    series.forEach(({ points, color, thickness, style }) => {
-      if (points.length < 4) {
+    const draw = (now) => {
+      animationFrame = window.requestAnimationFrame(draw);
+      if (now - lastDrawAt < frameInterval) {
         return;
       }
+      lastDrawAt = now - ((now - lastDrawAt) % frameInterval);
+
+      context.setTransform(
+        backingWidth / width,
+        0,
+        0,
+        backingHeight / height,
+        0,
+        0
+      );
+      context.clearRect(0, 0, width, height);
+      context.save();
       context.beginPath();
-      context.moveTo(points[0], points[1]);
-      for (let index = 2; index < points.length; index += 2) {
-        context.lineTo(points[index], points[index + 1]);
-      }
-      context.strokeStyle = color;
-      context.lineWidth = thickness;
-      context.globalAlpha = 0.95;
-      context.setLineDash(style === "dashed" ? [8, 4] : style === "dotted" ? [2, 4] : []);
-      context.stroke();
-    });
-    context.restore();
-  }, [height, padding, series, width]);
+      context.rect(
+        padding.left,
+        padding.top,
+        width - padding.left - padding.right,
+        height - padding.top - padding.bottom
+      );
+      context.clip();
+
+      const series = getSeriesRef.current?.() || [];
+      series.forEach(({ points, color, thickness, style }) => {
+        if (points.length < 4) {
+          return;
+        }
+        context.beginPath();
+        context.moveTo(points[0], points[1]);
+        for (let index = 2; index < points.length; index += 2) {
+          context.lineTo(points[index], points[index + 1]);
+        }
+        context.strokeStyle = color;
+        context.lineWidth = thickness;
+        context.globalAlpha = 0.95;
+        context.setLineDash(style === "dashed" ? [8, 4] : style === "dotted" ? [2, 4] : []);
+        context.stroke();
+      });
+      context.restore();
+      onPaintRef.current?.();
+    };
+
+    animationFrame = window.requestAnimationFrame(draw);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    height,
+    padding.bottom,
+    padding.left,
+    padding.right,
+    padding.top,
+    refreshMs,
+    width
+  ]);
 
   return (
     <canvas
@@ -792,6 +822,60 @@ const createCircularHistory = (initialCapacity = 1) => {
       if (property === "length") {
         return target.size;
       }
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        return target.at(Number(property));
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  return proxy;
+};
+
+const createHistoryView = (history, start, end) => {
+  const from = Math.max(0, Math.min(history.length, start));
+  const to = Math.max(from, Math.min(history.length, end));
+  const view = {
+    length: to - from,
+    at(index) {
+      const normalized = index < 0 ? this.length + index : index;
+      return normalized >= 0 && normalized < this.length
+        ? history.at(from + normalized)
+        : undefined;
+    },
+    slice(sliceStart = 0, sliceEnd = this.length) {
+      const normalizedStart = Math.max(0, sliceStart < 0 ? this.length + sliceStart : sliceStart);
+      const normalizedEnd = Math.min(this.length, sliceEnd < 0 ? this.length + sliceEnd : sliceEnd);
+      const result = new Array(Math.max(0, normalizedEnd - normalizedStart));
+      for (let index = normalizedStart; index < normalizedEnd; index += 1) {
+        result[index - normalizedStart] = this.at(index);
+      }
+      return result;
+    },
+    map(callback) {
+      const result = new Array(this.length);
+      for (let index = 0; index < this.length; index += 1) {
+        result[index] = callback(this.at(index), index, proxy);
+      }
+      return result;
+    },
+    forEach(callback) {
+      for (let index = 0; index < this.length; index += 1) {
+        callback(this.at(index), index, proxy);
+      }
+    },
+    filter(callback) {
+      const result = [];
+      for (let index = 0; index < this.length; index += 1) {
+        const value = this.at(index);
+        if (callback(value, index, proxy)) {
+          result.push(value);
+        }
+      }
+      return result;
+    }
+  };
+  const proxy = new Proxy(view, {
+    get(target, property, receiver) {
       if (typeof property === "string" && /^\d+$/.test(property)) {
         return target.at(Number(property));
       }
@@ -1143,7 +1227,7 @@ export default function App() {
       return;
     }
 
-    const refreshMs = clamp(Number(basicConfig.refreshMs) || 100, 16, 1000);
+    const refreshMs = Math.max(100, clamp(Number(basicConfig.refreshMs) || 100, 16, 1000));
     const elapsedMs = performance.now() - lastUiFlushAtRef.current;
     const delayMs = Math.max(0, refreshMs - elapsedMs);
     uiFlushTimerRef.current = window.setTimeout(flushPendingUiUpdates, delayMs);
@@ -1877,11 +1961,16 @@ export default function App() {
       1,
       Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
     );
-    const allSamples = historyRef.current.length > visibleBufferSamples
-      ? historyRef.current.slice(-visibleBufferSamples)
-      : historyRef.current;
     const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
-    return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+    const desiredSamples = plot.xMode === "window"
+      ? Math.min(visibleBufferSamples, sampleWindowSize)
+      : visibleBufferSamples;
+    const sampleCount = Math.min(historyRef.current.length, desiredSamples);
+    return createHistoryView(
+      historyRef.current,
+      historyRef.current.length - sampleCount,
+      historyRef.current.length
+    );
   };
 
   const appendSampleToLod = (sample, sequence) => {
@@ -3479,16 +3568,6 @@ export default function App() {
 
 
   useEffect(() => {
-    if (activeTab !== "plotter" || dataVersion === 0) {
-      return undefined;
-    }
-    const paintFrame = window.requestAnimationFrame(() => {
-      plotPaintCountRef.current += 1;
-    });
-    return () => window.cancelAnimationFrame(paintFrame);
-  }, [activeTab, dataVersion]);
-
-  useEffect(() => {
     let previousCount = plotPaintCountRef.current;
     let previousTime = performance.now();
     const ticker = window.setInterval(() => {
@@ -3532,7 +3611,7 @@ export default function App() {
     };
   }, [plotResize]);
 
-  const renderPlot = (plot) => {
+  const renderPlot = (plot, plotIndex) => {
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = Math.max(520, plotWidths[plot.id] || 1200);
     const height = Math.max(180, layoutHeight - 88);
@@ -3678,16 +3757,37 @@ export default function App() {
       max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
     };
 
-    const canvasSeries = hasRenderableData
-      ? yAssignments.map((assignment) => {
+    const getCanvasSeries = () => {
+      if (!hasRenderableData) {
+        return [];
+      }
+      const latestRawSamples = getSamplesForPlot(plot);
+      const latestSamples = getLodSamplesForPlot(
+        plot,
+        latestRawSamples,
+        width - padding.left - padding.right
+      );
+      const latestFirstSequence = latestRawSamples[0]?.sequence ?? 0;
+      const latestXValues = latestSamples.map((sample, index) => {
+        if (xAssignment) {
+          const value = getSampleValue(sample, xAssignment.channelId);
+          return Number.isFinite(value) ? value : index;
+        }
+        if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
+          return sample.xValue;
+        }
+        return Number.isFinite(sample.sequence) ? sample.sequence - latestFirstSequence : index;
+      });
+
+      return yAssignments.map((assignment) => {
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
         }
 
         const points = buildSeriesPoints(
-          samples,
-          xValues,
+          latestSamples,
+          latestXValues,
           assignment.channelId,
           getSampleValue,
           stats.min,
@@ -3713,8 +3813,8 @@ export default function App() {
           thickness: Math.max(1, thickness),
           style
         };
-      }).filter(Boolean)
-      : [];
+      }).filter(Boolean);
+    };
 
     const computeRollingStatSeries = (values, mode) => {
       if (mode === "avg") {
@@ -4060,7 +4160,11 @@ export default function App() {
         width={width}
         height={height}
         padding={padding}
-        series={canvasSeries}
+        getSeries={getCanvasSeries}
+        refreshMs={basicConfig.refreshMs}
+        onPaint={plotIndex === 0 ? () => {
+          plotPaintCountRef.current += 1;
+        } : undefined}
       />
       </>
     );
@@ -4640,7 +4744,7 @@ export default function App() {
 
         {activeTab === "plotter" ? (
           <div ref={plotsRef} className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
-            {plots.map((plot) => {
+            {plots.map((plot, plotIndex) => {
               const draft = getDraft(plot.id);
               const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
               const legendEntries = plot.assignments.map((assignment) => {
@@ -4677,7 +4781,7 @@ export default function App() {
                     onDrop={(event) => handlePlotDrop(event, plot.id)}
                     data-plot-id={plot.id}
                   >
-                    {renderPlot(plot)}
+                    {renderPlot(plot, plotIndex)}
                     <div className="plot__legend-box">
                       <strong>Señales</strong>
                       {legendEntries.length === 0 ? (
