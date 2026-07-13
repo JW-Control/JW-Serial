@@ -1837,7 +1837,9 @@ export default function App() {
 
   const getLodSamplesForPlot = (plot, rawSamples, width) => {
     const channelIds = [...new Set(plot.assignments.map((assignment) => assignment.channelId))];
-    const targetGroups = Math.max(256, Math.ceil(width));
+    // Each LOD group emits Min + Max, so half a group per CSS pixel
+    // already provides roughly one drawable point per pixel and channel.
+    const targetGroups = Math.max(256, Math.ceil(width / 2));
     const targetSamples = Math.max(2048, targetGroups * Math.max(1, channelIds.length) * 2);
     if (rawSamples.length <= targetSamples) {
       return rawSamples;
