@@ -214,11 +214,6 @@ const channelIndex = (channelId) => Number(channelId.replace("val", ""));
 const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
 const isSystemChannelId = (channelId) => /^sys[A-Z]/.test(channelId || "");
 
-const buildRxMetricValues = (stats, fps = 0) => ({
-  sysSps: Number(stats?.sps || 0),
-  sysFps: Number(fps || 0)
-});
-
 const axisLabels = {
   x: "X",
   y1: "Y1",
@@ -922,7 +917,13 @@ export default function App() {
       return sample.values?.[channelIndex(channelId)];
     }
     if (isSystemChannelId(channelId)) {
-      return sample.systemValues?.[channelId];
+      if (channelId === "sysSps") {
+        return sample.sysSps ?? sample.systemValues?.sysSps;
+      }
+      if (channelId === "sysFps") {
+        return sample.sysFps ?? sample.systemValues?.sysFps;
+      }
+      return undefined;
     }
     return sample.virtualValues?.[channelId];
   };
@@ -1452,7 +1453,7 @@ export default function App() {
     }
 
     if (!activeDefinitions.length) {
-      historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: {} }));
+      historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined }));
       rebuildLodFromHistory();
       return {};
     }
@@ -1804,7 +1805,8 @@ export default function App() {
     };
 
     sample.values?.forEach((value, index) => updateExtrema(`val${index}`, value));
-    Object.entries(sample.systemValues || {}).forEach(([channelId, value]) => updateExtrema(channelId, value));
+    updateExtrema("sysSps", sample.sysSps ?? sample.systemValues?.sysSps);
+    updateExtrema("sysFps", sample.sysFps ?? sample.systemValues?.sysFps);
     Object.entries(sample.virtualValues || {}).forEach(([channelId, value]) => updateExtrema(channelId, value));
     block.endSequence = sequence;
     block.count += 1;
@@ -3228,9 +3230,11 @@ export default function App() {
         sequence: totalFramesRef.current,
         timestamp: frame.timestamp,
         xValue,
-        values: incomingValues.slice(0, channelCount),
-        systemValues: buildRxMetricValues(nextStats, latestPlotFpsRef.current),
-        virtualValues: {}
+        values: channelCount === incomingValues.length
+          ? incomingValues
+          : incomingValues.slice(0, channelCount),
+        sysSps: Number(nextStats.sps || 0),
+        sysFps: Number(latestPlotFpsRef.current || 0)
       };
       historyRef.current.push(historyEntry);
       const activeVirtualFunctions = virtualFunctionsRef.current;
