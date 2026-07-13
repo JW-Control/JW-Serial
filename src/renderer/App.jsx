@@ -226,16 +226,18 @@ const buildPath = (points) =>
     .join(" ");
 
 const minStep = 0.05;
+const minYAxisStep = 0.001;
 
-const pickStep = (range, targetTicks = 6) => {
+const pickStep = (range, targetTicks = 6, minimumStep = minStep, multipliers = [5, 10]) => {
   if (range <= 0 || Number.isNaN(range)) {
-    return minStep;
+    return minimumStep;
   }
 
-  const target = Math.max(minStep, range / targetTicks);
+  const target = Math.max(minimumStep, range / targetTicks);
   const exponent = Math.floor(Math.log10(target));
   const base = 10 ** exponent;
-  const candidates = [5 * base, 10 * base].filter((step) => step >= minStep);
+  const candidates = multipliers.map((multiplier) => multiplier * base)
+    .filter((step) => step >= minimumStep);
 
   for (const candidate of candidates) {
     if (candidate >= target) {
@@ -243,8 +245,11 @@ const pickStep = (range, targetTicks = 6) => {
     }
   }
 
-  return Math.max(minStep, 5 * 10 ** (exponent + 1));
+  return Math.max(minimumStep, multipliers[0] * 10 ** (exponent + 1));
 };
+
+const pickYAxisStep = (range, targetTicks = 6) =>
+  pickStep(range, targetTicks, minYAxisStep, [1, 2, 5, 10]);
 
 const getStepDivisionBase = (step) => {
   if (!Number.isFinite(step) || step <= 0) {
@@ -256,11 +261,11 @@ const getStepDivisionBase = (step) => {
   return Math.abs(normalized - 5) < 1e-9 ? 5 : 10;
 };
 
-const makeTicks = (minValue, maxValue, targetTicks = 6) => {
+const makeTicks = (minValue, maxValue, targetTicks = 6, stepPicker = pickStep) => {
   const min = Number.isFinite(minValue) ? minValue : 0;
   const max = Number.isFinite(maxValue) ? maxValue : min + 1;
   const safeMax = max === min ? min + 1 : max;
-  const step = pickStep(safeMax - min, targetTicks);
+  const step = stepPicker(safeMax - min, targetTicks);
   const start = Math.floor(min / step) * step;
   const ticks = [];
 
@@ -324,12 +329,12 @@ const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
   const targetTicks = clamp(Math.floor(pixelHeight / 28), 5, 16);
 
   if (targetTicks <= 2) {
-    const step = pickStep(span, 2);
+    const step = pickYAxisStep(span, 2);
     const centered = Number((Math.round(((minValue + maxValue) * 0.5) / step) * step).toFixed(6));
     return { ticks: [centered], min: minValue, max: maxValue, step };
   }
 
-  return makeTicks(minValue, maxValue, targetTicks);
+  return makeTicks(minValue, maxValue, targetTicks, pickYAxisStep);
 };
 
 const makeTicksFromStepRange = (minValue, maxValue, step) => {
@@ -474,12 +479,12 @@ const normalizeYAxisRange = (minValue, maxValue) => {
   }
 
   if (minValue === maxValue) {
-    const pad = Math.max(Math.abs(minValue) * 0.05, 0.1);
+    const pad = Math.max(Math.abs(minValue) * 0.05, minYAxisStep);
     return { min: minValue - pad, max: maxValue + pad };
   }
 
   const span = maxValue - minValue;
-  const pad = Math.max(span * 0.06, 0.05);
+  const pad = Math.max(span * 0.06, minYAxisStep * 0.5);
   return { min: minValue - pad, max: maxValue + pad };
 };
 
@@ -3848,7 +3853,7 @@ export default function App() {
 
       const previous = y2FollowStateRef.current.get(plot.id);
       const referenceIntervals = Math.max(1, y1TicksData.ticks.length - 1);
-      const followStep = pickStep(y2Range.max - y2Range.min, referenceIntervals);
+      const followStep = pickYAxisStep(y2Range.max - y2Range.min, referenceIntervals);
       const followedTicks = makeYAxisTicksFollowingReference(y1TicksData, axisStats.y2, followStep || ownTicks.step || minStep, previous);
       y2FollowStateRef.current.set(plot.id, followedTicks.state);
       return {
