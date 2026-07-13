@@ -780,6 +780,7 @@ export default function App() {
   const captureInProgressRef = useRef(false);
   const y2FollowStateRef = useRef(new Map());
   const historyRef = useRef([]);
+  const lodBlocksRef = useRef({ blocks: [], head: 0, current: null });
   const virtualFunctionsRef = useRef([]);
   const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
   const totalFramesRef = useRef(0);
@@ -1452,6 +1453,7 @@ export default function App() {
 
     if (!activeDefinitions.length) {
       historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: {} }));
+      rebuildLodFromHistory();
       return {};
     }
 
@@ -1472,6 +1474,8 @@ export default function App() {
       });
       return { ...sample, virtualValues };
     });
+
+    rebuildLodFromHistory();
 
     return latestValues;
   };
@@ -1770,6 +1774,108 @@ export default function App() {
       : historyRef.current;
     const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
     return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+  };
+
+  const appendSampleToLod = (sample, sequence) => {
+    const lod = lodBlocksRef.current;
+    let block = lod.current;
+    if (!block) {
+      block = { startSequence: sequence, endSequence: sequence, count: 0, extrema: {} };
+      lod.current = block;
+    }
+
+    const updateExtrema = (channelId, value) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const current = block.extrema[channelId];
+      if (!current) {
+        block.extrema[channelId] = { min: value, max: value, minSample: sample, maxSample: sample };
+        return;
+      }
+      if (value < current.min) {
+        current.min = value;
+        current.minSample = sample;
+      }
+      if (value > current.max) {
+        current.max = value;
+        current.maxSample = sample;
+      }
+    };
+
+    sample.values?.forEach((value, index) => updateExtrema(`val${index}`, value));
+    Object.entries(sample.systemValues || {}).forEach(([channelId, value]) => updateExtrema(channelId, value));
+    Object.entries(sample.virtualValues || {}).forEach(([channelId, value]) => updateExtrema(channelId, value));
+    block.endSequence = sequence;
+    block.count += 1;
+
+    if (block.count >= 64) {
+      lod.blocks.push(block);
+      lod.current = null;
+    }
+  };
+
+  const rebuildLodFromHistory = () => {
+    lodBlocksRef.current = { blocks: [], head: 0, current: null };
+    historyRef.current.forEach((sample, index) => {
+      const sequence = Number.isFinite(sample.sequence) ? sample.sequence : index + 1;
+      sample.sequence = sequence;
+      appendSampleToLod(sample, sequence);
+    });
+  };
+
+  const trimLodBefore = (oldestSequence) => {
+    const lod = lodBlocksRef.current;
+    while (lod.head < lod.blocks.length && lod.blocks[lod.head].endSequence < oldestSequence) {
+      lod.head += 1;
+    }
+    if (lod.head > 1024 && lod.head > lod.blocks.length / 2) {
+      lod.blocks = lod.blocks.slice(lod.head);
+      lod.head = 0;
+    }
+  };
+
+  const getLodSamplesForPlot = (plot, rawSamples, width) => {
+    const targetSamples = Math.max(2048, Math.ceil(width * 6));
+    if (rawSamples.length <= targetSamples) {
+      return rawSamples;
+    }
+
+    const firstSequence = rawSamples[0]?.sequence;
+    const lastSequence = rawSamples[rawSamples.length - 1]?.sequence;
+    if (!Number.isFinite(firstSequence) || !Number.isFinite(lastSequence)) {
+      return rawSamples;
+    }
+
+    const channelIds = [...new Set(plot.assignments.map((assignment) => assignment.channelId))];
+    const selected = new Map([
+      [firstSequence, rawSamples[0]],
+      [lastSequence, rawSamples[rawSamples.length - 1]]
+    ]);
+    const includeBlock = (block) => {
+      if (!block || block.endSequence < firstSequence || block.startSequence > lastSequence) {
+        return;
+      }
+      channelIds.forEach((channelId) => {
+        const extrema = block.extrema[channelId];
+        [extrema?.minSample, extrema?.maxSample].forEach((candidate) => {
+          if (candidate?.sequence >= firstSequence && candidate.sequence <= lastSequence) {
+            selected.set(candidate.sequence, candidate);
+          }
+        });
+      });
+    };
+
+    const lod = lodBlocksRef.current;
+    for (let index = lod.head; index < lod.blocks.length; index += 1) {
+      const block = lod.blocks[index];
+      if (block.startSequence > lastSequence) {
+        break;
+      }
+      includeBlock(block);
+    }
+    includeBlock(lod.current);
+    return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
   };
 
   const getPlotXValue = (plot, sample, index) => {
@@ -2357,6 +2463,7 @@ export default function App() {
 
   const clearBuffer = () => {
     historyRef.current = [];
+    lodBlocksRef.current = { blocks: [], head: 0, current: null };
     rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
     totalFramesRef.current = 0;
     latestRxStatsRef.current = { frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null };
@@ -2997,6 +3104,7 @@ export default function App() {
       totalFramesRef.current += 1;
       const nextStats = updateReceiveStats(frame.timestamp, totalFramesRef.current);
       const historyEntry = {
+        sequence: totalFramesRef.current,
         timestamp: frame.timestamp,
         xValue,
         values: incomingValues.slice(0, channelCount),
@@ -3017,6 +3125,7 @@ export default function App() {
         latestVirtualValuesRef.current = nextVirtualValues;
         pendingVirtualRefreshRef.current = true;
       }
+      appendSampleToLod(historyEntry, historyEntry.sequence);
       const trimSlack = Math.max(
         1000,
         Math.round(Number(basicConfig.samplesPerSecond) || 100),
@@ -3024,6 +3133,7 @@ export default function App() {
       );
       if (historyRef.current.length > maxSamples + trimSlack) {
         historyRef.current = historyRef.current.slice(-maxSamples);
+        trimLodBefore(historyRef.current[0]?.sequence ?? 0);
       }
       pendingDataRefreshRef.current = true;
     };
@@ -3197,12 +3307,14 @@ export default function App() {
   }, [plotResize]);
 
   const renderPlot = (plot) => {
-    const samples = getSamplesForPlot(plot);
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = Math.max(520, plotWidths[plot.id] || 1200);
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 20, right: 74, bottom: 40, left: 74 };
     const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
+    const rawSamples = getSamplesForPlot(plot);
+    const samples = getLodSamplesForPlot(plot, rawSamples, width - padding.left - padding.right);
+    const firstRawSequence = rawSamples[0]?.sequence ?? 0;
 
     const xAssignment = plot.assignments.find((item) => item.axis === "x");
     const xValues = samples.map((sample, index) => {
@@ -3213,7 +3325,7 @@ export default function App() {
       if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
         return sample.xValue;
       }
-      return index;
+      return Number.isFinite(sample.sequence) ? sample.sequence - firstRawSequence : index;
     });
     const yScaleSamples = getVisibleSamplesForPlot(plot, samples);
 
