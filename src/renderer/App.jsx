@@ -631,12 +631,12 @@ const buildSeriesPoints = (
   return coordinates;
 };
 
-const PlotSeriesCanvas = ({ width, height, padding, getSeries, refreshMs, onPaint }) => {
+const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) => {
   const canvasRef = useRef(null);
-  const getSeriesRef = useRef(getSeries);
+  const getFrameRef = useRef(getFrame);
   const onPaintRef = useRef(onPaint);
 
-  getSeriesRef.current = getSeries;
+  getFrameRef.current = getFrame;
   onPaintRef.current = onPaint;
 
   useEffect(() => {
@@ -673,17 +673,75 @@ const PlotSeriesCanvas = ({ width, height, padding, getSeries, refreshMs, onPain
         0
       );
       context.clearRect(0, 0, width, height);
+
+      const frame = getFrameRef.current?.();
+      if (!frame) {
+        return;
+      }
+      const { series, xTicks, y1Ticks, y2Ticks, theme } = frame;
+      const plotRight = width - padding.right;
+      const plotBottom = height - padding.bottom;
+      const plotWidth = plotRight - padding.left;
+      const plotHeight = plotBottom - padding.top;
+      const xToPx = (value) => padding.left
+        + ((value - xTicks.min) / (xTicks.max - xTicks.min || 1)) * plotWidth;
+      const yToPx = (value, ticks) => plotBottom
+        - ((value - ticks.min) / (ticks.max - ticks.min || 1)) * plotHeight;
+      const visibleTicks = (ticks) => ticks.ticks.filter(
+        (tick, index, values) => index === 0
+          || formatTick(tick, ticks.step) !== formatTick(values[index - 1], ticks.step)
+      );
+      const strokeLine = (x1, y1, x2, y2, color, lineWidth = 1) => {
+        context.beginPath();
+        context.moveTo(x1, y1);
+        context.lineTo(x2, y2);
+        context.strokeStyle = color;
+        context.lineWidth = lineWidth;
+        context.setLineDash([]);
+        context.globalAlpha = 1;
+        context.stroke();
+      };
+
+      makeMinorTicks(xTicks, getStepDivisionBase(xTicks.step)).forEach((tick) => {
+        const x = xToPx(tick);
+        strokeLine(x, padding.top, x, plotBottom, theme.gridMinor);
+      });
+      makeMinorTicks(y1Ticks, getStepDivisionBase(y1Ticks.step)).forEach((tick) => {
+        const y = yToPx(tick, y1Ticks);
+        strokeLine(padding.left, y, plotRight, y, theme.gridMinorY);
+      });
+      visibleTicks(xTicks).forEach((tick) => {
+        const x = xToPx(tick);
+        strokeLine(x, padding.top, x, plotBottom, theme.gridMajor, 1.15);
+      });
+      visibleTicks(y1Ticks).forEach((tick) => {
+        const y = yToPx(tick, y1Ticks);
+        strokeLine(padding.left, y, plotRight, y, theme.gridYMajor, 1.15);
+      });
+      strokeLine(padding.left, plotBottom, plotRight, plotBottom, theme.axis);
+      strokeLine(padding.left, padding.top, padding.left, plotBottom, theme.axis);
+      strokeLine(plotRight, padding.top, plotRight, plotBottom, theme.axis);
+
+      context.fillStyle = theme.tick;
+      context.font = "12px system-ui, sans-serif";
+      context.textBaseline = "middle";
+      visibleTicks(xTicks).forEach((tick) => {
+        context.textAlign = "center";
+        context.fillText(formatTick(tick, xTicks.step), xToPx(tick), plotBottom + 24);
+      });
+      visibleTicks(y1Ticks).forEach((tick) => {
+        context.textAlign = "right";
+        context.fillText(formatTick(tick, y1Ticks.step), padding.left - 14, yToPx(tick, y1Ticks));
+      });
+      visibleTicks(y2Ticks).forEach((tick) => {
+        context.textAlign = "left";
+        context.fillText(formatTick(tick, y2Ticks.step), plotRight + 14, yToPx(tick, y2Ticks));
+      });
+
       context.save();
       context.beginPath();
-      context.rect(
-        padding.left,
-        padding.top,
-        width - padding.left - padding.right,
-        height - padding.top - padding.bottom
-      );
+      context.rect(padding.left, padding.top, plotWidth, plotHeight);
       context.clip();
-
-      const series = getSeriesRef.current?.() || [];
       series.forEach(({ points, color, thickness, style }) => {
         if (points.length < 4) {
           return;
@@ -3757,10 +3815,7 @@ export default function App() {
       max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
     };
 
-    const getCanvasSeries = () => {
-      if (!hasRenderableData) {
-        return [];
-      }
+    const getCanvasFrame = () => {
       const latestRawSamples = getSamplesForPlot(plot);
       const latestSamples = getLodSamplesForPlot(
         plot,
@@ -3778,8 +3833,14 @@ export default function App() {
         }
         return Number.isFinite(sample.sequence) ? sample.sequence - latestFirstSequence : index;
       });
+      const latestXRange = findFiniteRange(latestXValues);
+      const latestXTicks = plot.xMode === "manual"
+        ? xTicksData
+        : latestSamples.length >= 2 && latestXRange
+          ? makeXTicks(latestXRange.min, latestXRange.max, xTargetTicks)
+          : xTicksData;
 
-      return yAssignments.map((assignment) => {
+      const series = hasRenderableData ? yAssignments.map((assignment) => {
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
@@ -3795,8 +3856,8 @@ export default function App() {
           height,
           width,
           padding,
-          xTicksData.min,
-          xTicksData.max,
+          latestXTicks.min,
+          latestXTicks.max,
           basicConfig.plotMode
         );
         if (points.length < 2) {
@@ -3813,7 +3874,15 @@ export default function App() {
           thickness: Math.max(1, thickness),
           style
         };
-      }).filter(Boolean);
+      }).filter(Boolean) : [];
+
+      return {
+        series,
+        xTicks: latestXTicks,
+        y1Ticks: y1TicksData,
+        y2Ticks: y2TicksData,
+        theme: plotTheme
+      };
     };
 
     const computeRollingStatSeries = (values, mode) => {
@@ -3969,6 +4038,7 @@ export default function App() {
         </defs>
         <rect x="0" y="0" width={width} height={height} fill={plotTheme.background} />
         <line
+          visibility="hidden"
           x1={padding.left}
           y1={height - padding.bottom}
           x2={width - padding.right}
@@ -3977,6 +4047,7 @@ export default function App() {
           strokeWidth="1"
         />
         <line
+          visibility="hidden"
           x1={padding.left}
           y1={padding.top}
           x2={padding.left}
@@ -3985,6 +4056,7 @@ export default function App() {
           strokeWidth="1"
         />
         <line
+          visibility="hidden"
           x1={width - padding.right}
           y1={padding.top}
           x2={width - padding.right}
@@ -4031,6 +4103,7 @@ export default function App() {
           {xAutoEnabled ? <path d={`M ${padding.left - 16} ${height - padding.bottom + 20} L ${padding.left - 14} ${height - padding.bottom + 22} L ${padding.left - 10} ${height - padding.bottom + 17}`} stroke={plotTheme.check} strokeWidth="1.5" fill="none" /> : null}
         </g>
 
+        {false && <g>
         {xMinorTicks.map((tick) => {
           const x = xTickToPx(tick);
           return (
@@ -4141,6 +4214,7 @@ export default function App() {
             </text>
           );
         })}
+        </g>}
         <g clipPath={`url(#${plotClipId})`}>
           {statCurves}
         </g>
@@ -4160,7 +4234,7 @@ export default function App() {
         width={width}
         height={height}
         padding={padding}
-        getSeries={getCanvasSeries}
+        getFrame={getCanvasFrame}
         refreshMs={basicConfig.refreshMs}
         onPaint={plotIndex === 0 ? () => {
           plotPaintCountRef.current += 1;
