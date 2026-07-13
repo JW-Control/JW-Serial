@@ -641,13 +641,21 @@ const PlotSeriesCanvas = ({ width, height, padding, series }) => {
     }
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     const backingWidth = Math.max(1, Math.round(width * pixelRatio));
-    const backingHeight = Math.max(1, Math.round(height * pixelRatio));
+    const verticalCssPixels = Math.min(height, 420);
+    const backingHeight = Math.max(1, Math.round(verticalCssPixels * pixelRatio));
     if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
       canvas.width = backingWidth;
       canvas.height = backingHeight;
     }
     const context = canvas.getContext("2d");
-    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.setTransform(
+      backingWidth / width,
+      0,
+      0,
+      backingHeight / height,
+      0,
+      0
+    );
     context.clearRect(0, 0, width, height);
     context.save();
     context.beginPath();
