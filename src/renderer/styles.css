@@ -616,6 +616,14 @@ textarea {
   z-index: 1;
 }
 
+.plot__axis-labels {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
 
 
 .plot__legend-box {

@@ -633,6 +633,8 @@ const buildSeriesPoints = (
 
 const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) => {
   const canvasRef = useRef(null);
+  const labelsRef = useRef(null);
+  const labelPoolsRef = useRef({ x: [], y1: [], y2: [] });
   const getFrameRef = useRef(getFrame);
   const onPaintRef = useRef(onPaint);
 
@@ -708,6 +710,51 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
         context.globalAlpha = 1;
         context.stroke();
       };
+      const updateLabels = (key, ticks, getPosition, textAnchor) => {
+        const labels = visibleTicks(ticks);
+        const pool = labelPoolsRef.current[key];
+        const svg = labelsRef.current;
+        if (!svg) {
+          return;
+        }
+        labels.forEach((tick, index) => {
+          let node = pool[index];
+          if (!node) {
+            node = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            node.setAttribute("font-size", "12");
+            node.setAttribute("font-family", "system-ui, sans-serif");
+            node.setAttribute("dominant-baseline", "middle");
+            svg.appendChild(node);
+            pool.push(node);
+          }
+          const position = getPosition(tick);
+          const label = formatTick(tick, ticks.step);
+          if (node.__jwX !== position.x) {
+            node.setAttribute("x", String(position.x));
+            node.__jwX = position.x;
+          }
+          if (node.__jwY !== position.y) {
+            node.setAttribute("y", String(position.y));
+            node.__jwY = position.y;
+          }
+          if (node.__jwAnchor !== textAnchor) {
+            node.setAttribute("text-anchor", textAnchor);
+            node.__jwAnchor = textAnchor;
+          }
+          if (node.__jwFill !== theme.tick) {
+            node.setAttribute("fill", theme.tick);
+            node.__jwFill = theme.tick;
+          }
+          if (node.__jwLabel !== label) {
+            node.textContent = label;
+            node.__jwLabel = label;
+          }
+          node.style.display = "";
+        });
+        for (let index = labels.length; index < pool.length; index += 1) {
+          pool[index].style.display = "none";
+        }
+      };
 
       makeMinorTicks(xTicks, getStepDivisionBase(xTicks.step)).forEach((tick) => {
         const x = xToPx(tick);
@@ -729,21 +776,9 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
       strokeLine(padding.left, padding.top, padding.left, plotBottom, theme.axis);
       strokeLine(plotRight, padding.top, plotRight, plotBottom, theme.axis);
 
-      context.fillStyle = theme.tick;
-      context.font = "12px system-ui, sans-serif";
-      context.textBaseline = "middle";
-      visibleTicks(xTicks).forEach((tick) => {
-        context.textAlign = "center";
-        context.fillText(formatTick(tick, xTicks.step), xToPx(tick), plotBottom + 24);
-      });
-      visibleTicks(y1Ticks).forEach((tick) => {
-        context.textAlign = "right";
-        context.fillText(formatTick(tick, y1Ticks.step), padding.left - 14, yToPx(tick, y1Ticks));
-      });
-      visibleTicks(y2Ticks).forEach((tick) => {
-        context.textAlign = "left";
-        context.fillText(formatTick(tick, y2Ticks.step), plotRight + 14, yToPx(tick, y2Ticks));
-      });
+      updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 24 }), "middle");
+      updateLabels("y1", y1Ticks, (tick) => ({ x: padding.left - 14, y: yToPx(tick, y1Ticks) }), "end");
+      updateLabels("y2", y2Ticks, (tick) => ({ x: plotRight + 14, y: yToPx(tick, y2Ticks) }), "start");
 
       context.save();
       context.beginPath();
@@ -781,12 +816,23 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
   ]);
 
   return (
+    <>
     <canvas
       ref={canvasRef}
       className="plot__series-canvas"
       style={{ height: `${height}px` }}
       aria-hidden="true"
     />
+    <svg
+      ref={labelsRef}
+      className="plot__axis-labels"
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMinYMin meet"
+      aria-hidden="true"
+    />
+    </>
   );
 };
 
