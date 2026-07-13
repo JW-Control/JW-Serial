@@ -635,6 +635,8 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
   const canvasRef = useRef(null);
   const labelsRef = useRef(null);
   const labelPoolsRef = useRef({ x: [], y1: [], y2: [] });
+  const labelGroupsRef = useRef({});
+  const axisLabelStateRef = useRef({ xLayout: null, lastYUpdateAt: 0 });
   const getFrameRef = useRef(getFrame);
   const onPaintRef = useRef(onPaint);
 
@@ -717,6 +719,12 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
         if (!svg) {
           return;
         }
+        let group = labelGroupsRef.current[key];
+        if (!group) {
+          group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          svg.appendChild(group);
+          labelGroupsRef.current[key] = group;
+        }
         labels.forEach((tick, index) => {
           let node = pool[index];
           if (!node) {
@@ -724,7 +732,7 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
             node.setAttribute("font-size", "12");
             node.setAttribute("font-family", "system-ui, sans-serif");
             node.setAttribute("dominant-baseline", "middle");
-            svg.appendChild(node);
+            group.appendChild(node);
             pool.push(node);
           }
           const position = getPosition(tick);
@@ -754,6 +762,7 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
         for (let index = labels.length; index < pool.length; index += 1) {
           pool[index].style.display = "none";
         }
+        return labels;
       };
 
       makeMinorTicks(xTicks, getStepDivisionBase(xTicks.step)).forEach((tick) => {
@@ -776,9 +785,45 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
       strokeLine(padding.left, padding.top, padding.left, plotBottom, theme.axis);
       strokeLine(plotRight, padding.top, plotRight, plotBottom, theme.axis);
 
-      updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 24 }), "middle");
-      updateLabels("y1", y1Ticks, (tick) => ({ x: padding.left - 14, y: yToPx(tick, y1Ticks) }), "end");
-      updateLabels("y2", y2Ticks, (tick) => ({ x: plotRight + 14, y: yToPx(tick, y2Ticks) }), "start");
+      const labelState = axisLabelStateRef.current;
+      const currentXLabels = visibleTicks(xTicks);
+      const xSignature = currentXLabels.map((tick) => formatTick(tick, xTicks.step)).join("|");
+      const xSpan = xTicks.max - xTicks.min || 1;
+      const previousXLayout = labelState.xLayout;
+      const spanChange = previousXLayout
+        ? Math.abs(xSpan - previousXLayout.span) / Math.max(Math.abs(previousXLayout.span), 1e-9)
+        : Number.POSITIVE_INFINITY;
+      const shouldLayoutX = !previousXLayout
+        || now - previousXLayout.updatedAt >= 100
+        || previousXLayout.signature !== xSignature
+        || spanChange > 0.02;
+      if (shouldLayoutX) {
+        updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 24 }), "middle");
+        const xGroup = labelGroupsRef.current.x;
+        xGroup?.removeAttribute("transform");
+        if (xGroup) {
+          delete xGroup.__jwTranslateX;
+        }
+        labelState.xLayout = {
+          min: xTicks.min,
+          span: xSpan,
+          signature: xSignature,
+          updatedAt: now
+        };
+      } else {
+        const translateX = ((previousXLayout.min - xTicks.min) / xSpan) * plotWidth;
+        const xGroup = labelGroupsRef.current.x;
+        if (xGroup && xGroup.__jwTranslateX !== translateX) {
+          xGroup.setAttribute("transform", `translate(${translateX} 0)`);
+          xGroup.__jwTranslateX = translateX;
+        }
+      }
+
+      if (now - labelState.lastYUpdateAt >= 100) {
+        updateLabels("y1", y1Ticks, (tick) => ({ x: padding.left - 14, y: yToPx(tick, y1Ticks) }), "end");
+        updateLabels("y2", y2Ticks, (tick) => ({ x: plotRight + 14, y: yToPx(tick, y2Ticks) }), "start");
+        labelState.lastYUpdateAt = now;
+      }
 
       context.save();
       context.beginPath();
