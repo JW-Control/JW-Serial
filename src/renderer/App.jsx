@@ -695,6 +695,104 @@ const basePlotTicks = {
 
 const templateStorageKey = "jwSerialTemplates";
 
+const createCircularHistory = (initialCapacity = 1) => {
+  const state = {
+    storage: new Array(Math.max(1, initialCapacity)),
+    capacity: Math.max(1, initialCapacity),
+    start: 0,
+    size: 0,
+    setCapacity(nextCapacity) {
+      const capacity = Math.max(1, Math.floor(nextCapacity || 1));
+      if (capacity === this.capacity) {
+        return;
+      }
+      const nextStorage = new Array(capacity);
+      const keep = Math.min(this.size, capacity);
+      const offset = this.size - keep;
+      for (let index = 0; index < keep; index += 1) {
+        nextStorage[index] = this.at(offset + index);
+      }
+      this.storage = nextStorage;
+      this.capacity = capacity;
+      this.start = 0;
+      this.size = keep;
+    },
+    push(value, capacity = this.capacity) {
+      this.setCapacity(capacity);
+      if (this.size < this.capacity) {
+        this.storage[(this.start + this.size) % this.capacity] = value;
+        this.size += 1;
+        return;
+      }
+      this.storage[this.start] = value;
+      this.start = (this.start + 1) % this.capacity;
+    },
+    at(index) {
+      const normalized = index < 0 ? this.size + index : index;
+      if (normalized < 0 || normalized >= this.size) {
+        return undefined;
+      }
+      return this.storage[(this.start + normalized) % this.capacity];
+    },
+    slice(start = 0, end = this.size) {
+      const from = Math.max(0, start < 0 ? this.size + start : start);
+      const to = Math.min(this.size, end < 0 ? this.size + end : end);
+      const result = new Array(Math.max(0, to - from));
+      for (let index = from; index < to; index += 1) {
+        result[index - from] = this.at(index);
+      }
+      return result;
+    },
+    map(callback) {
+      const result = new Array(this.size);
+      for (let index = 0; index < this.size; index += 1) {
+        result[index] = callback(this.at(index), index, proxy);
+      }
+      return result;
+    },
+    forEach(callback) {
+      for (let index = 0; index < this.size; index += 1) {
+        callback(this.at(index), index, proxy);
+      }
+    },
+    filter(callback) {
+      const result = [];
+      for (let index = 0; index < this.size; index += 1) {
+        const value = this.at(index);
+        if (callback(value, index, proxy)) {
+          result.push(value);
+        }
+      }
+      return result;
+    },
+    replace(values) {
+      const keep = Math.min(values.length, this.capacity);
+      this.start = 0;
+      this.size = keep;
+      for (let index = 0; index < keep; index += 1) {
+        this.storage[index] = values[values.length - keep + index];
+      }
+    },
+    clear() {
+      this.storage.fill(undefined);
+      this.start = 0;
+      this.size = 0;
+    }
+  };
+  const proxy = new Proxy(state, {
+    get(target, property, receiver) {
+      if (property === "length") {
+        return target.size;
+      }
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        return target.at(Number(property));
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  return proxy;
+};
+
 const readTemplateStore = () => {
   try {
     return JSON.parse(localStorage.getItem(templateStorageKey) || "{}");
@@ -774,7 +872,7 @@ export default function App() {
   const plotResizeObservers = useRef(new Map());
   const captureInProgressRef = useRef(false);
   const y2FollowStateRef = useRef(new Map());
-  const historyRef = useRef([]);
+  const historyRef = useRef(createCircularHistory());
   const lodBlocksRef = useRef({ levels: [], current: null });
   const virtualFunctionsRef = useRef([]);
   const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
@@ -1453,14 +1551,14 @@ export default function App() {
     }
 
     if (!activeDefinitions.length) {
-      historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined }));
+      historyRef.current.replace(historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined })));
       rebuildLodFromHistory();
       return {};
     }
 
     const sourceHistory = historyRef.current;
     const latestValues = {};
-    historyRef.current = sourceHistory.map((sample, index) => {
+    const recomputedHistory = sourceHistory.map((sample, index) => {
       const samplesUntilNow = sourceHistory.slice(0, index + 1);
       const virtualValues = {};
       activeDefinitions.forEach((definition) => {
@@ -1475,6 +1573,7 @@ export default function App() {
       });
       return { ...sample, virtualValues };
     });
+    historyRef.current.replace(recomputedHistory);
 
     rebuildLodFromHistory();
 
@@ -2585,7 +2684,7 @@ export default function App() {
   };
 
   const clearBuffer = () => {
-    historyRef.current = [];
+    historyRef.current.clear();
     lodBlocksRef.current = { levels: [], current: null };
     rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
     totalFramesRef.current = 0;
@@ -3236,7 +3335,7 @@ export default function App() {
         sysSps: Number(nextStats.sps || 0),
         sysFps: Number(latestPlotFpsRef.current || 0)
       };
-      historyRef.current.push(historyEntry);
+      historyRef.current.push(historyEntry, maxSamples);
       const activeVirtualFunctions = virtualFunctionsRef.current;
       if (activeVirtualFunctions.length) {
         const nextVirtualValues = {};
@@ -3251,13 +3350,7 @@ export default function App() {
         pendingVirtualRefreshRef.current = true;
       }
       appendSampleToLod(historyEntry, historyEntry.sequence);
-      const trimSlack = Math.max(
-        1000,
-        Math.round(Number(basicConfig.samplesPerSecond) || 100),
-        Math.round(maxSamples * 0.02)
-      );
-      if (historyRef.current.length > maxSamples + trimSlack) {
-        historyRef.current = historyRef.current.slice(-maxSamples);
+      if (historyRef.current.length >= maxSamples && historyEntry.sequence % 64 === 0) {
         trimLodBefore(historyRef.current[0]?.sequence ?? 0);
       }
       pendingDataRefreshRef.current = true;
