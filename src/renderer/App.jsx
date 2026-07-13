@@ -780,7 +780,7 @@ export default function App() {
   const captureInProgressRef = useRef(false);
   const y2FollowStateRef = useRef(new Map());
   const historyRef = useRef([]);
-  const lodBlocksRef = useRef({ blocks: [], head: 0, current: null });
+  const lodBlocksRef = useRef({ levels: [], current: null });
   const virtualFunctionsRef = useRef([]);
   const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
   const totalFramesRef = useRef(0);
@@ -1810,13 +1810,61 @@ export default function App() {
     block.count += 1;
 
     if (block.count >= 64) {
-      lod.blocks.push(block);
+      appendCompletedLodBlock(lod, block);
       lod.current = null;
     }
   };
 
+  const mergeLodBlocks = (left, right) => {
+    const extrema = {};
+    const channelIds = new Set([...Object.keys(left.extrema), ...Object.keys(right.extrema)]);
+    channelIds.forEach((channelId) => {
+      const leftExtrema = left.extrema[channelId];
+      const rightExtrema = right.extrema[channelId];
+      if (!leftExtrema) {
+        extrema[channelId] = rightExtrema;
+        return;
+      }
+      if (!rightExtrema) {
+        extrema[channelId] = leftExtrema;
+        return;
+      }
+      extrema[channelId] = {
+        min: Math.min(leftExtrema.min, rightExtrema.min),
+        max: Math.max(leftExtrema.max, rightExtrema.max),
+        minSample: leftExtrema.min <= rightExtrema.min ? leftExtrema.minSample : rightExtrema.minSample,
+        maxSample: leftExtrema.max >= rightExtrema.max ? leftExtrema.maxSample : rightExtrema.maxSample
+      };
+    });
+    return {
+      startSequence: left.startSequence,
+      endSequence: right.endSequence,
+      count: left.count + right.count,
+      extrema
+    };
+  };
+
+  const appendCompletedLodBlock = (lod, baseBlock) => {
+    let block = baseBlock;
+    let levelIndex = 0;
+    while (block) {
+      if (!lod.levels[levelIndex]) {
+        lod.levels[levelIndex] = { blocks: [], head: 0, pending: null };
+      }
+      const level = lod.levels[levelIndex];
+      level.blocks.push(block);
+      if (!level.pending) {
+        level.pending = block;
+        break;
+      }
+      block = mergeLodBlocks(level.pending, block);
+      level.pending = null;
+      levelIndex += 1;
+    }
+  };
+
   const rebuildLodFromHistory = () => {
-    lodBlocksRef.current = { blocks: [], head: 0, current: null };
+    lodBlocksRef.current = { levels: [], current: null };
     historyRef.current.forEach((sample, index) => {
       const sequence = Number.isFinite(sample.sequence) ? sample.sequence : index + 1;
       sample.sequence = sequence;
@@ -1826,13 +1874,18 @@ export default function App() {
 
   const trimLodBefore = (oldestSequence) => {
     const lod = lodBlocksRef.current;
-    while (lod.head < lod.blocks.length && lod.blocks[lod.head].endSequence < oldestSequence) {
-      lod.head += 1;
-    }
-    if (lod.head > 1024 && lod.head > lod.blocks.length / 2) {
-      lod.blocks = lod.blocks.slice(lod.head);
-      lod.head = 0;
-    }
+    lod.levels.forEach((level) => {
+      while (level.head < level.blocks.length && level.blocks[level.head].endSequence < oldestSequence) {
+        level.head += 1;
+      }
+      if (level.pending?.endSequence < oldestSequence) {
+        level.pending = null;
+      }
+      if (level.head > 1024 && level.head > level.blocks.length / 2) {
+        level.blocks = level.blocks.slice(level.head);
+        level.head = 0;
+      }
+    });
   };
 
   const getLodSamplesForPlot = (plot, rawSamples, width) => {
@@ -1856,14 +1909,61 @@ export default function App() {
       [lastSequence, rawSamples[rawSamples.length - 1]]
     ]);
     const lod = lodBlocksRef.current;
-    const visibleBlocks = [];
-    for (let index = lod.head; index < lod.blocks.length; index += 1) {
-      const block = lod.blocks[index];
-      if (block.startSequence > lastSequence) {
+    const findRange = (level) => {
+      let low = level.head;
+      let high = level.blocks.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (level.blocks[middle].endSequence < firstSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      const start = low;
+      high = level.blocks.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (level.blocks[middle].startSequence <= lastSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      return { start, end: low, count: Math.max(0, low - start) };
+    };
+
+    let selectedLevel = lod.levels[0] || { blocks: [], head: 0 };
+    let selectedRange = findRange(selectedLevel);
+    for (let levelIndex = 1; levelIndex < lod.levels.length; levelIndex += 1) {
+      if (selectedRange.count <= targetGroups) {
         break;
       }
-      if (block.endSequence >= firstSequence) {
-        visibleBlocks.push(block);
+      const candidateLevel = lod.levels[levelIndex];
+      const candidateRange = findRange(candidateLevel);
+      if (candidateRange.count > 0) {
+        selectedLevel = candidateLevel;
+        selectedRange = candidateRange;
+      }
+    }
+
+    const visibleBlocks = selectedLevel.blocks.slice(selectedRange.start, selectedRange.end);
+    const coveredEndSequence = visibleBlocks[visibleBlocks.length - 1]?.endSequence ?? firstSequence - 1;
+    const baseLevel = lod.levels[0];
+    if (baseLevel && selectedLevel !== baseLevel) {
+      const tailRange = findRange(baseLevel);
+      let low = tailRange.start;
+      let high = tailRange.end;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (baseLevel.blocks[middle].endSequence <= coveredEndSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      for (let index = low; index < tailRange.end; index += 1) {
+        visibleBlocks.push(baseLevel.blocks[index]);
       }
     }
     if (lod.current?.endSequence >= firstSequence && lod.current.startSequence <= lastSequence) {
@@ -2484,7 +2584,7 @@ export default function App() {
 
   const clearBuffer = () => {
     historyRef.current = [];
-    lodBlocksRef.current = { blocks: [], head: 0, current: null };
+    lodBlocksRef.current = { levels: [], current: null };
     rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
     totalFramesRef.current = 0;
     latestRxStatsRef.current = { frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null };
