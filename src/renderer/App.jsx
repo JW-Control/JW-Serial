@@ -198,6 +198,7 @@ const esp32Ch340HighSpeedProfile = {
   refreshMs: 50,
   plotMode: "minmax",
   xWindowSize: 10,
+  includeSequenceCounter: true,
   serialTimeoutSeconds: 3
 };
 
@@ -213,6 +214,30 @@ const normalizeChannels = (count, previous) => {
 const channelIndex = (channelId) => Number(channelId.replace("val", ""));
 const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
 const isSystemChannelId = (channelId) => /^sys[A-Z]/.test(channelId || "");
+
+const normalizeFrameFieldName = (name) =>
+  String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const isSequenceFieldName = (name) =>
+  ["seq", "sequence", "sample", "sampleid", "frame", "frameid", "counter", "count", "n"].includes(normalizeFrameFieldName(name));
+
+const isTimestampFieldName = (name) =>
+  ["t", "ts", "time", "timestamp", "millis", "ms"].includes(normalizeFrameFieldName(name));
+
+const createEmptyRxStats = () => ({
+  frames: 0,
+  sps: 0,
+  avgMs: 0,
+  jitterMs: 0,
+  lastFrameMs: null,
+  seqLost: 0,
+  seqGaps: 0,
+  seqResets: 0,
+  seqLast: null
+});
 
 const axisLabels = {
   x: "X",
@@ -1094,7 +1119,7 @@ export default function App() {
   const [templateMessage, setTemplateMessage] = useState("");
   const [templateConfirm, setTemplateConfirm] = useState(null);
   const [eventText, setEventText] = useState("");
-  const [rxStats, setRxStats] = useState({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
+  const [rxStats, setRxStats] = useState(() => createEmptyRxStats());
   const [plotFps, setPlotFps] = useState(0);
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
@@ -1129,6 +1154,7 @@ export default function App() {
   const lodBlocksRef = useRef({ levels: [], current: null });
   const virtualFunctionsRef = useRef([]);
   const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
+  const sequenceStatsRef = useRef({ last: null, lost: 0, gaps: 0, resets: 0 });
   const totalFramesRef = useRef(0);
   const latestRxStatsRef = useRef(rxStats);
   const latestPlotFpsRef = useRef(plotFps);
@@ -1152,6 +1178,7 @@ export default function App() {
     refreshMs: 100,
     plotMode: "normal",
     includeTimestamp: false,
+    includeSequenceCounter: false,
     minValidFrames: 1
   });
 
@@ -1219,8 +1246,35 @@ export default function App() {
       thickness: 2,
       value: Number(plotFps || 0),
       system: true
+    },
+    {
+      id: "sysSeqLost",
+      name: "Perdidos",
+      color: "#dc2626",
+      lineStyle: "solid",
+      thickness: 2,
+      value: Number(rxStats.seqLost || 0),
+      system: true
+    },
+    {
+      id: "sysSeqGaps",
+      name: "Huecos seq",
+      color: "#f97316",
+      lineStyle: "dashed",
+      thickness: 2,
+      value: Number(rxStats.seqGaps || 0),
+      system: true
+    },
+    {
+      id: "sysSeqLast",
+      name: "Ultimo seq",
+      color: "#64748b",
+      lineStyle: "dotted",
+      thickness: 2,
+      value: Number(rxStats.seqLast ?? 0),
+      system: true
     }
-  ], [plotFps, rxStats.sps]);
+  ], [plotFps, rxStats.seqGaps, rxStats.seqLast, rxStats.seqLost, rxStats.sps]);
 
   const virtualChannels = useMemo(() =>
     virtualFunctions
@@ -1273,6 +1327,15 @@ export default function App() {
       }
       if (channelId === "sysFps") {
         return sample.sysFps ?? sample.systemValues?.sysFps;
+      }
+      if (channelId === "sysSeqLost") {
+        return sample.sysSeqLost ?? sample.systemValues?.sysSeqLost;
+      }
+      if (channelId === "sysSeqGaps") {
+        return sample.sysSeqGaps ?? sample.systemValues?.sysSeqGaps;
+      }
+      if (channelId === "sysSeqLast") {
+        return sample.externalSequence ?? sample.sysSeqLast ?? sample.systemValues?.sysSeqLast;
       }
       return undefined;
     }
@@ -1437,6 +1500,84 @@ export default function App() {
     }));
   };
 
+  const extractFramePayload = (frame) => {
+    const frameValues = Array.isArray(frame.values) ? frame.values : [];
+    const frameNames = Array.isArray(frame.names) ? frame.names : [];
+    const hasNamedValues = frameNames.length === frameValues.length;
+    let sequenceIndex = hasNamedValues ? frameNames.findIndex(isSequenceFieldName) : -1;
+
+    if (sequenceIndex < 0 && (basicConfig.includeSequenceCounter || frame.includeSequenceCounter)) {
+      sequenceIndex = 0;
+    }
+
+    let timestampIndex = -1;
+    if (frame.includeTimestamp || basicConfig.includeTimestamp) {
+      timestampIndex = hasNamedValues
+        ? frameNames.findIndex((name, index) => index !== sequenceIndex && isTimestampFieldName(name))
+        : -1;
+      if (timestampIndex < 0) {
+        timestampIndex = sequenceIndex === 0 ? 1 : 0;
+      }
+    }
+
+    const values = [];
+    const names = [];
+    frameValues.forEach((value, index) => {
+      if (index === sequenceIndex || index === timestampIndex) {
+        return;
+      }
+      values.push(value);
+      if (hasNamedValues) {
+        names.push(frameNames[index]);
+      }
+    });
+
+    const rawSequence = sequenceIndex >= 0 ? Number(frameValues[sequenceIndex]) : Number.NaN;
+    const externalSequence = Number.isFinite(rawSequence) ? Math.trunc(rawSequence) : null;
+    const rawTimestamp = timestampIndex >= 0 ? Number(frameValues[timestampIndex]) : Number.NaN;
+
+    return {
+      values,
+      names: names.length ? names : undefined,
+      xValue: Number.isFinite(rawTimestamp) ? rawTimestamp : null,
+      externalSequence
+    };
+  };
+
+  const updateSequenceStats = (externalSequence) => {
+    if (!Number.isFinite(externalSequence)) {
+      return latestRxStatsRef.current;
+    }
+
+    const state = sequenceStatsRef.current;
+    if (state.last !== null) {
+      const delta = externalSequence - state.last;
+      if (delta > 1) {
+        const missing = delta - 1;
+        state.lost += missing;
+        state.gaps += 1;
+        rawLogQueueRef.current.push(`SYS > Hueco de secuencia: faltan ${missing} muestra(s), ${state.last} -> ${externalSequence}`);
+      } else if (delta <= 0) {
+        state.resets += 1;
+        rawLogQueueRef.current.push(`SYS > Secuencia reiniciada o repetida: ${state.last} -> ${externalSequence}`);
+      }
+      if (rawLogQueueRef.current.length > 500) {
+        rawLogQueueRef.current = rawLogQueueRef.current.slice(-500);
+      }
+    }
+
+    state.last = externalSequence;
+    const nextStats = {
+      ...latestRxStatsRef.current,
+      seqLost: state.lost,
+      seqGaps: state.gaps,
+      seqResets: state.resets,
+      seqLast: externalSequence
+    };
+    latestRxStatsRef.current = nextStats;
+    return nextStats;
+  };
+
   const updateReceiveStats = (timestamp, frameCount) => {
     const now = Number(timestamp) || Date.now();
     const windowMs = 5000;
@@ -1469,6 +1610,7 @@ export default function App() {
     const jitterMs = Math.sqrt(variance);
     const spanSeconds = intervalCount ? (now - window.times[window.head]) / 1000 : 1;
     const nextStats = {
+      ...latestRxStatsRef.current,
       frames: Math.max(0, Number(frameCount) || 0),
       sps: intervalCount ? intervalCount / Math.max(0.001, spanSeconds) : 0,
       avgMs,
@@ -2855,6 +2997,7 @@ export default function App() {
       refreshMs: esp32Ch340HighSpeedProfile.refreshMs,
       plotMode: esp32Ch340HighSpeedProfile.plotMode,
       includeTimestamp: false,
+      includeSequenceCounter: esp32Ch340HighSpeedProfile.includeSequenceCounter,
       minValidFrames: 1
     }));
     updateAppSettings({ serialTimeoutSeconds: esp32Ch340HighSpeedProfile.serialTimeoutSeconds });
@@ -2865,7 +3008,7 @@ export default function App() {
         xWindowSize: esp32Ch340HighSpeedProfile.xWindowSize
       }))
     );
-    setConfigMessage("Perfil ESP32/CH340 aplicado: 921600 baud, 2 kSPS, buffer 60 s y ploteo Min/Max.");
+    setConfigMessage("Perfil ESP32/CH340 aplicado: 921600 baud, 2 kSPS, secuencia al inicio, buffer 60 s y ploteo Min/Max.");
   };
 
   const refreshPorts = async () => {
@@ -2904,6 +3047,7 @@ export default function App() {
         expectedChannels: basicConfig.channelCount,
         minValidFrames: basicConfig.minValidFrames,
         includeTimestamp: basicConfig.includeTimestamp,
+        includeSequenceCounter: basicConfig.includeSequenceCounter,
         serialFilterMode: appSettings.serialFilterMode,
         serialFilterPatterns: appSettings.serialFilterPatterns
       });
@@ -2945,8 +3089,9 @@ export default function App() {
     historyRef.current.clear();
     lodBlocksRef.current = { levels: [], current: null };
     rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
+    sequenceStatsRef.current = { last: null, lost: 0, gaps: 0, resets: 0 };
     totalFramesRef.current = 0;
-    latestRxStatsRef.current = { frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null };
+    latestRxStatsRef.current = createEmptyRxStats();
     latestVirtualValuesRef.current = {};
     rawLogQueueRef.current = [];
     pendingDataRefreshRef.current = false;
@@ -3564,15 +3709,16 @@ export default function App() {
         return;
       }
 
-      const incomingValues = frame.values;
-      const xValue = frame.includeTimestamp ? frame.values[0] : null;
+      const payload = extractFramePayload(frame);
+      const incomingValues = payload.values;
+      const xValue = payload.xValue;
       const channelCount =
         basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
 
       const normalizedChannels = normalizeChannels(channelCount, latestChannelsRef.current);
       latestChannelsRef.current = normalizedChannels.map((channel, index) => ({
         ...channel,
-        name: frame.names?.[index] || channel.name,
+        name: payload.names?.[index] || channel.name,
         value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
       }));
       pendingChannelRefreshRef.current = true;
@@ -3583,15 +3729,20 @@ export default function App() {
       );
       totalFramesRef.current += 1;
       const nextStats = updateReceiveStats(frame.timestamp, totalFramesRef.current);
+      const nextSequenceStats = updateSequenceStats(payload.externalSequence);
       const historyEntry = {
         sequence: totalFramesRef.current,
+        externalSequence: payload.externalSequence,
         timestamp: frame.timestamp,
         xValue,
         values: channelCount === incomingValues.length
           ? incomingValues
           : incomingValues.slice(0, channelCount),
         sysSps: Number(nextStats.sps || 0),
-        sysFps: Number(latestPlotFpsRef.current || 0)
+        sysFps: Number(latestPlotFpsRef.current || 0),
+        sysSeqLost: Number(nextSequenceStats.seqLost || 0),
+        sysSeqGaps: Number(nextSequenceStats.seqGaps || 0),
+        sysSeqLast: Number(nextSequenceStats.seqLast ?? Number.NaN)
       };
       historyRef.current.push(historyEntry, maxSamples);
       const activeVirtualFunctions = virtualFunctionsRef.current;
@@ -5409,6 +5560,19 @@ export default function App() {
                     />
                     Incluye timestamp en X
                   </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(basicConfig.includeSequenceCounter)}
+                      onChange={(event) =>
+                        updateBasicConfig("includeSequenceCounter", event.target.checked)
+                      }
+                    />
+                    Incluye secuencia al inicio
+                  </label>
+                  <p className="modal__hint">
+                    CSV compacto: seq,valor0,valor1. En clave:valor se detecta automáticamente SEQ:123.
+                  </p>
                   <label>
                     Timeout sin trama válida (s)
                     <input

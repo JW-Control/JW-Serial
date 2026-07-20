@@ -26,6 +26,7 @@ let portConfig = {
   expectedChannels: 0,
   minValidFrames: 1,
   includeTimestamp: false,
+  includeSequenceCounter: false,
   serialFilterMode: "none",
   serialFilterPatterns: ""
 };
@@ -98,6 +99,40 @@ const shouldAcceptSerialLine = (line) => {
 
   const matches = patterns.some((pattern) => matchesSerialFilterPattern(line, pattern));
   return mode === "accept" ? matches : !matches;
+};
+
+const normalizeFieldName = (name) =>
+  String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const isSequenceFieldName = (name) =>
+  ["seq", "sequence", "sample", "sampleid", "frame", "frameid", "counter", "count", "n"].includes(normalizeFieldName(name));
+
+const isTimestampFieldName = (name) =>
+  ["t", "ts", "time", "timestamp", "millis", "ms"].includes(normalizeFieldName(name));
+
+const getParsedDataValueCount = (parsed) => {
+  if (!Array.isArray(parsed?.values)) {
+    return 0;
+  }
+
+  if (Array.isArray(parsed.names) && parsed.names.length === parsed.values.length) {
+    return parsed.values.filter((_value, index) => {
+      const name = parsed.names[index];
+      if (isSequenceFieldName(name)) {
+        return false;
+      }
+      if (portConfig.includeTimestamp && isTimestampFieldName(name)) {
+        return false;
+      }
+      return true;
+    }).length;
+  }
+
+  const metadataCount = Number(portConfig.includeSequenceCounter) + Number(portConfig.includeTimestamp);
+  return Math.max(0, parsed.values.length - metadataCount);
 };
 
 const parseLine = (line) => {
@@ -269,7 +304,7 @@ const handleIncomingChunk = (chunk) => {
 
     if (
       portConfig.expectedChannels > 0 &&
-      parsed.values.length !== portConfig.expectedChannels
+      getParsedDataValueCount(parsed) !== portConfig.expectedChannels
     ) {
       validFrameStreak = 0;
       return;
@@ -283,7 +318,8 @@ const handleIncomingChunk = (chunk) => {
     pendingFrames.push({
       ...parsed,
       timestamp: Date.now(),
-      includeTimestamp: portConfig.includeTimestamp
+      includeTimestamp: portConfig.includeTimestamp,
+      includeSequenceCounter: portConfig.includeSequenceCounter
     });
   });
 
@@ -343,6 +379,7 @@ ipcMain.handle("serial:open", async (_event, options) => {
     expectedChannels: Number(options.expectedChannels || 0),
     minValidFrames: Math.max(1, Number(options.minValidFrames || 1)),
     includeTimestamp: Boolean(options.includeTimestamp),
+    includeSequenceCounter: Boolean(options.includeSequenceCounter),
     serialFilterMode: options.serialFilterMode || "none",
     serialFilterPatterns: options.serialFilterPatterns || ""
   };
