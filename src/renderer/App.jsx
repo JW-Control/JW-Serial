@@ -13,7 +13,9 @@ const virtualOperations = [
   { id: "delta", label: "Delta", needsWindow: true, formula: (name, windowText) => `delta([${name}], ${windowText})` },
   { id: "slope", label: "Pend", needsWindow: true, formula: (name, windowText) => `pend([${name}], ${windowText})` },
   { id: "std", label: "Std", needsWindow: true, formula: (name, windowText) => `std([${name}], ${windowText})` },
-  { id: "rms", label: "RMS", needsWindow: true, formula: (name, windowText) => `rms([${name}], ${windowText})` }
+  { id: "rms", label: "RMS", needsWindow: true, formula: (name, windowText) => `rms([${name}], ${windowText})` },
+  { id: "errorPercen", label: "Error%", needsWindow: true, formula: (name, windowText) => `errorPercen([${name}], ${windowText})` },
+  { id: "errorRela", label: "Error_Rela", needsWindow: true, formula: (name, windowText) => `errorRela([${name}], ${windowText})` }
 ];
 
 const functionBlockOperations = [
@@ -38,7 +40,9 @@ const functionBlockOperations = [
   { id: "gt", label: ">", kind: "binary", symbol: ">" },
   { id: "lt", label: "<", kind: "binary", symbol: "<" },
   { id: "gte", label: ">=", kind: "binary", symbol: ">=" },
-  { id: "lte", label: "<=", kind: "binary", symbol: "<=" }
+  { id: "lte", label: "<=", kind: "binary", symbol: "<=" },
+  { id: "errorPercen", label: "Error%", kind: "window", needsWindow: true },
+  { id: "errorRela", label: "Error_Rela", kind: "window", needsWindow: true }
 ];
 
 const binaryBlockSymbols = {
@@ -60,6 +64,8 @@ const binaryExpressionFunctions = {
   lte: "lte"
 };
 
+const virtualFunctionEvaluatorCache = new Map();
+
 const unaryExpressionFunctions = {
   abs: "abs",
   sqrt: "sqrt",
@@ -75,7 +81,9 @@ const windowExpressionFunctions = {
   delta: "delta",
   slope: "pend",
   std: "std",
-  rms: "rms"
+  rms: "rms",
+  errorPercen: "errorPercen",
+  errorRela: "errorRela"
 };
 
 const createDefaultChannels = (count) =>
@@ -251,7 +259,7 @@ const buildPath = (points) =>
     .join(" ");
 
 const minStep = 0.05;
-const minYAxisStep = 0.001;
+const minYAxisStep = 0.0001;
 
 const pickStep = (range, targetTicks = 6, minimumStep = minStep, multipliers = [5, 10]) => {
   if (range <= 0 || Number.isNaN(range)) {
@@ -504,12 +512,12 @@ const normalizeYAxisRange = (minValue, maxValue) => {
   }
 
   if (minValue === maxValue) {
-    const pad = Math.max(Math.abs(minValue) * 0.05, minYAxisStep);
+    const pad = Math.max(Math.abs(minValue) * 0.05, minYAxisStep * 2);
     return { min: minValue - pad, max: maxValue + pad };
   }
 
   const span = maxValue - minValue;
-  const pad = Math.max(span * 0.06, minYAxisStep * 0.5);
+  const pad = Math.max(span * 0.06, minYAxisStep * 2);
   return { min: minValue - pad, max: maxValue + pad };
 };
 
@@ -532,7 +540,10 @@ const formatTick = (value, step) => {
   if (step >= 0.1) {
     return rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
   }
-  return rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  if (step >= 0.001) {
+    return rounded.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return rounded.toFixed(4);
 };
 
 const downsamplePointsByPixel = (points) => {
@@ -828,7 +839,7 @@ const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint
         || previousXLayout.signature !== xSignature
         || spanChange > 0.02;
       if (shouldLayoutX) {
-        updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 24 }), "middle");
+        updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 28 }), "middle");
         const xGroup = labelGroupsRef.current.x;
         xGroup?.removeAttribute("transform");
         if (xGroup) {
@@ -1172,15 +1183,16 @@ export default function App() {
 
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
-    samplesPerSecond: 80,
-    periodMs: 12.5,
-    bufferSeconds: 36000,
-    refreshMs: 100,
+    samplesPerSecond: 100,
+    periodMs: 10,
+    bufferSeconds: 120,
+    refreshMs: 33,
+    minValidFrames: 10,
     plotMode: "normal",
     includeTimestamp: false,
-    includeSequenceCounter: false,
-    minValidFrames: 1
+    includeSequenceCounter: false
   });
+  const [draftBasicConfig, setDraftBasicConfig] = useState({});
 
   const [advancedConfig, setAdvancedConfig] = useState({
     dataBits: 8,
@@ -1228,54 +1240,6 @@ export default function App() {
     return channels.slice(0, basicConfig.channelCount);
   }, [basicConfig.channelCount, channels]);
 
-  const systemChannels = useMemo(() => [
-    {
-      id: "sysSps",
-      name: "SPS",
-      color: "#0f766e",
-      lineStyle: "solid",
-      thickness: 2,
-      value: Number(rxStats.sps || 0),
-      system: true
-    },
-    {
-      id: "sysFps",
-      name: "FPS",
-      color: "#7c3aed",
-      lineStyle: "solid",
-      thickness: 2,
-      value: Number(plotFps || 0),
-      system: true
-    },
-    {
-      id: "sysSeqLost",
-      name: "Perdidos",
-      color: "#dc2626",
-      lineStyle: "solid",
-      thickness: 2,
-      value: Number(rxStats.seqLost || 0),
-      system: true
-    },
-    {
-      id: "sysSeqGaps",
-      name: "Huecos seq",
-      color: "#f97316",
-      lineStyle: "dashed",
-      thickness: 2,
-      value: Number(rxStats.seqGaps || 0),
-      system: true
-    },
-    {
-      id: "sysSeqLast",
-      name: "Ultimo seq",
-      color: "#64748b",
-      lineStyle: "dotted",
-      thickness: 2,
-      value: Number(rxStats.seqLast ?? 0),
-      system: true
-    }
-  ], [plotFps, rxStats.seqGaps, rxStats.seqLast, rxStats.seqLost, rxStats.sps]);
-
   const virtualChannels = useMemo(() =>
     virtualFunctions
       .filter((item) => item.enabled !== false)
@@ -1291,7 +1255,7 @@ export default function App() {
     [virtualFunctions]
   );
 
-  const sourceChannels = useMemo(() => [...visibleChannels, ...systemChannels], [visibleChannels, systemChannels]);
+  const sourceChannels = useMemo(() => visibleChannels, [visibleChannels]);
   const allChannels = useMemo(() => [...sourceChannels, ...virtualChannels], [sourceChannels, virtualChannels]);
 
   const virtualFunctionSnapshotKey = useMemo(() =>
@@ -1690,7 +1654,7 @@ export default function App() {
       windowValue: 200
     };
 
-    if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms"].includes(type)) {
+    if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(type)) {
       return baseWindow;
     }
     if (["abs", "sqrt", "round"].includes(type)) {
@@ -1791,11 +1755,35 @@ export default function App() {
     definition?.block ? blockToExpression(definition.block) : normalizeFunctionExpression(definition);
 
 
-  const getWindowValuesForChannel = (channelId, samples = historyRef.current, windowArg = null, definition = null) => {
-    const selectedSamples = samples.slice(-getFunctionWindowSize(definition || {}, windowArg));
-    return selectedSamples
-      .map((sample) => getSampleValue(sample, channelId))
-      .filter((value) => Number.isFinite(value));
+  const getWindowValuesForChannel = (channelId, samples = historyRef.current, windowArg = null, definition = null, endIndex = samples.length) => {
+    const end = endIndex;
+    const windowSize = getFunctionWindowSize(definition || {}, windowArg);
+    const start = Math.max(0, end - windowSize);
+    const result = [];
+    
+    const isPhysical = isPhysicalChannelId(channelId);
+    const physIndex = isPhysical ? channelIndex(channelId) : -1;
+    const isSystem = !isPhysical && isSystemChannelId(channelId);
+
+    for (let i = start; i < end; i++) {
+      const sample = samples[i];
+      if (!sample) {
+        continue;
+      }
+      let value;
+      if (isPhysical) {
+        value = sample.values?.[physIndex];
+      } else if (isSystem) {
+        value = getSampleValue(sample, channelId);
+      } else {
+        value = sample.virtualValues?.[channelId];
+      }
+      
+      if (Number.isFinite(value)) {
+        result.push(value);
+      }
+    }
+    return result;
   };
 
   const buildFunctionFormula = (definition) => {
@@ -1846,7 +1834,7 @@ export default function App() {
 
     const expressionWithoutStrings = expression.replace(/"[^"]*"/g, "");
     const names = expressionWithoutStrings.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-    const allowedNames = new Set(["token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte"]);
+    const allowedNames = new Set(["token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", "errorPercen", "errorRela"]);
     const invalidName = names.find((name) => !allowedNames.has(name));
     if (invalidName) {
       throw new Error(`Función no permitida: ${invalidName}`);
@@ -1855,15 +1843,19 @@ export default function App() {
     return expression;
   };
 
-  const evaluateVirtualFunction = (definition, samples = historyRef.current) => {
+  const evaluateVirtualFunction = (definition, samples = historyRef.current, endIndex = samples.length) => {
     const expression = expressionToJs(definition);
-    const evaluator = new Function("token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", `"use strict"; return (${expression});`);
+    let evaluator = virtualFunctionEvaluatorCache.get(expression);
+    if (!evaluator) {
+      evaluator = new Function("token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", "errorPercen", "errorRela", `"use strict"; return (${expression});`);
+      virtualFunctionEvaluatorCache.set(expression, evaluator);
+    }
 
-    if (!samples.length) {
+    if (!samples.length || endIndex <= 0) {
       return undefined;
     }
 
-    const currentValue = (channelId) => getSampleValue(samples[samples.length - 1], channelId);
+    const currentValue = (channelId) => getSampleValue(samples[endIndex - 1], channelId);
     const token = (channelId) => ({
       channelId,
       valueOf: () => {
@@ -1879,7 +1871,7 @@ export default function App() {
         const value = Number(input);
         return Number.isFinite(value) ? [value] : [];
       }
-      return getWindowValuesForChannel(channelId, samples, windowArg, definition);
+      return getWindowValuesForChannel(channelId, samples, windowArg, definition, endIndex);
     };
     const actual = (input) => {
       const channelId = tokenId(input);
@@ -1935,44 +1927,83 @@ export default function App() {
     const lt = (left, right) => (Number(left) < Number(right) ? 1 : 0);
     const gte = (left, right) => (Number(left) >= Number(right) ? 1 : 0);
     const lte = (left, right) => (Number(left) <= Number(right) ? 1 : 0);
-    const result = evaluator(token, actual, inicial, min, max, prom, Math.abs, Math.sqrt, Math.round, delta, pend, std, rms, gt, lt, gte, lte);
+    const errorPercen = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (!values.length) {
+        return Number.NaN;
+      }
+      const maxVal = Math.max(...values);
+      const minVal = Math.min(...values);
+      return Math.abs((maxVal - minVal) / (maxVal || 1e-9)) * 100;
+    };
+    const errorRela = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (!values.length) {
+        return Number.NaN;
+      }
+      const maxVal = Math.max(...values);
+      const minVal = Math.min(...values);
+      return Math.abs((maxVal - minVal) / (maxVal || 1e-9));
+    };
+    const result = evaluator(token, actual, inicial, min, max, prom, Math.abs, Math.sqrt, Math.round, delta, pend, std, rms, gt, lt, gte, lte, errorPercen, errorRela);
     return Number.isFinite(Number(result)) ? Number(result) : undefined;
   };
 
-  const recomputeVirtualFunctionHistory = (definitions = virtualFunctionsRef.current) => {
-    const activeDefinitions = definitions.filter((definition) => definition.enabled !== false);
-    if (!historyRef.current.length) {
-      return {};
-    }
+  const recomputeVirtualFunctionHistoryAsync = (definitions = virtualFunctionsRef.current, token) => {
+    return new Promise((resolve) => {
+      const activeDefinitions = definitions.filter((definition) => definition.enabled !== false);
+      if (!historyRef.current.length) {
+        resolve({});
+        return;
+      }
 
-    if (!activeDefinitions.length) {
-      historyRef.current.replace(historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined })));
-      rebuildLodFromHistory();
-      return {};
-    }
+      if (!activeDefinitions.length) {
+        historyRef.current.replace(historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined })));
+        rebuildLodFromHistory();
+        resolve({});
+        return;
+      }
 
-    const sourceHistory = historyRef.current;
-    const latestValues = {};
-    const recomputedHistory = sourceHistory.map((sample, index) => {
-      const samplesUntilNow = sourceHistory.slice(0, index + 1);
-      const virtualValues = {};
-      activeDefinitions.forEach((definition) => {
-        const value = evaluateVirtualFunction(definition, samplesUntilNow);
-        if (Number.isFinite(value)) {
-          const rounded = Number(value.toFixed(6));
-          virtualValues[definition.id] = rounded;
-          if (index === sourceHistory.length - 1) {
-            latestValues[definition.id] = rounded;
-          }
+      const sourceHistory = historyRef.current;
+      const latestValues = {};
+      const recomputedHistory = new Array(sourceHistory.length);
+
+      let i = 0;
+      const chunkSize = 500;
+
+      const processChunk = () => {
+        if (token !== window.__virtualFunctionRecomputeToken) {
+          resolve(null);
+          return;
         }
-      });
-      return { ...sample, virtualValues };
+        const end = Math.min(i + chunkSize, sourceHistory.length);
+        for (; i < end; i++) {
+          const sample = sourceHistory[i];
+          const virtualValues = {};
+          activeDefinitions.forEach((definition) => {
+            const value = evaluateVirtualFunction(definition, sourceHistory, i + 1);
+            if (Number.isFinite(value)) {
+              const rounded = Number(value.toFixed(6));
+              virtualValues[definition.id] = rounded;
+              if (i === sourceHistory.length - 1) {
+                latestValues[definition.id] = rounded;
+              }
+            }
+          });
+          recomputedHistory[i] = { ...sample, virtualValues };
+        }
+
+        if (i < sourceHistory.length) {
+          setTimeout(processChunk, 0);
+        } else {
+          historyRef.current.replace(recomputedHistory);
+          rebuildLodFromHistory();
+          resolve(latestValues);
+        }
+      };
+
+      processChunk();
     });
-    historyRef.current.replace(recomputedHistory);
-
-    rebuildLodFromHistory();
-
-    return latestValues;
   };
 
   useEffect(() => {
@@ -1980,19 +2011,24 @@ export default function App() {
       return;
     }
 
-    const latestValues = recomputeVirtualFunctionHistory(virtualFunctionsRef.current);
-    setVirtualFunctions((prev) => {
-      if (!prev.length) {
-        return prev;
-      }
-      return prev.map((definition) => ({
-        ...definition,
-        value: Number.isFinite(latestValues[definition.id])
-          ? latestValues[definition.id]
-          : definition.value || 0
-      }));
+    window.__virtualFunctionRecomputeToken = (window.__virtualFunctionRecomputeToken || 0) + 1;
+    const currentToken = window.__virtualFunctionRecomputeToken;
+
+    recomputeVirtualFunctionHistoryAsync(virtualFunctionsRef.current, currentToken).then((latestValues) => {
+      if (!latestValues || currentToken !== window.__virtualFunctionRecomputeToken) return;
+      setVirtualFunctions((prev) => {
+        if (!prev.length) {
+          return prev;
+        }
+        return prev.map((definition) => ({
+          ...definition,
+          value: Number.isFinite(latestValues[definition.id])
+            ? latestValues[definition.id]
+            : definition.value || 0
+        }));
+      });
+      setDataVersion((prev) => prev + 1);
     });
-    setDataVersion((prev) => prev + 1);
   }, [virtualFunctionSnapshotKey]);
 
   const validateFunctionDraft = (draft = functionDraft) => {
@@ -2203,9 +2239,9 @@ export default function App() {
 
 
   const getWheelUnits = (event) => {
-    const base = event.shiftKey ? 10 : 1;
-    const direction = event.deltaY < 0 ? 1 : -1;
-    return direction * base;
+    const intensity = event.deltaY / 100;
+    const base = event.shiftKey ? 5 : 1;
+    return -intensity * base;
   };
 
   const getPointerAxisZone = (event) => {
@@ -2241,7 +2277,7 @@ export default function App() {
         }
 
         if (enabled) {
-          return { ...plot, xMode: "auto" };
+          return { ...plot, xMode: "auto", xWindowOffset: 0 };
         }
 
         const auto = computeAxisAutoRange(plot, "x");
@@ -2268,11 +2304,14 @@ export default function App() {
     const desiredSamples = plot.xMode === "window"
       ? Math.min(visibleBufferSamples, sampleWindowSize)
       : visibleBufferSamples;
-    const sampleCount = Math.min(historyRef.current.length, desiredSamples);
+    const offsetSeconds = plot.xMode === "window" ? (Number(plot.xWindowOffset) || 0) : 0;
+    const offsetSamples = Math.floor(offsetSeconds * basicConfig.samplesPerSecond);
+    const endIdx = Math.max(0, historyRef.current.length - offsetSamples);
+    const startIdx = Math.max(0, endIdx - desiredSamples);
     return createHistoryView(
       historyRef.current,
-      historyRef.current.length - sampleCount,
-      historyRef.current.length
+      startIdx,
+      endIdx
     );
   };
 
@@ -2702,6 +2741,9 @@ export default function App() {
     event.stopPropagation();
 
     const units = getWheelUnits(event);
+    const rect = event.currentTarget.getBoundingClientRect();
+    const clientX = event.clientX;
+    const clientY = event.clientY;
 
     setPlots((prev) =>
       prev.map((candidate) => {
@@ -2711,47 +2753,49 @@ export default function App() {
 
         if (axisZone === "x") {
           const totalSeconds = Math.max(0.1, historyRef.current.length / Math.max(1, basicConfig.samplesPerSecond));
-          const currentSeconds = Math.max(0.1, Number(candidate.xWindowSize) || Math.min(10, totalSeconds));
-          const direction = units > 0 ? 1 : -1;
+          const currentSeconds = candidate.xMode === "auto" 
+            ? totalSeconds 
+            : Math.max(0.1, Number(candidate.xWindowSize) || Math.min(10, totalSeconds));
+          if (candidate.xMode === "window" || candidate.xMode === "auto") {
+            const currentOffset = Number(candidate.xWindowOffset) || 0;
+            const span = currentSeconds;
+            const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+            const safeSpan = Math.max(0.1, span * zoomFactor);
 
-          if (candidate.xMode === "window") {
-            const secondStep = event.shiftKey ? 10 : 1;
-            const nextSeconds = currentSeconds + direction * secondStep;
-            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
-            if (clamped >= totalSeconds - 1e-6) {
-              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
-            }
-            return {
-              ...candidate,
-              xWindowSize: Number(clamped.toFixed(3))
-            };
-          }
-          if (candidate.xMode === "auto") {
-            const secondStep = event.shiftKey ? 10 : 1;
-            const nextSeconds = currentSeconds + direction * secondStep;
-            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
-            if (clamped >= totalSeconds - 1e-6) {
-              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
+            const plotWidth = Math.max(1, rect.width - 148);
+            const relativeX = clamp((clientX - rect.left - 74) / plotWidth, 0, 1);
+            
+            const cursorOffset = currentOffset + span * (1 - relativeX);
+            let newOffset = cursorOffset - safeSpan * (1 - relativeX);
+            if (newOffset < 0) newOffset = 0;
+            
+            const clampedSpan = clamp(safeSpan, 0.1, totalSeconds);
+
+            if (newOffset === 0 && clampedSpan >= totalSeconds - 1e-6) {
+              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)), xWindowOffset: 0 };
             }
             return {
               ...candidate,
               xMode: "window",
-              xWindowSize: Number(clamped.toFixed(3))
+              xWindowSize: Number(clampedSpan.toFixed(3)),
+              xWindowOffset: Number(newOffset.toFixed(3))
             };
           }
           if (candidate.xMode === "manual") {
             const min = Number(candidate.xManualMin);
             const max = Number(candidate.xManualMax);
-            const center = (min + max) / 2;
             const span = Math.max(1e-6, max - min);
-            const scale = event.shiftKey
-              ? (direction > 0 ? 0.8 : 1.2)
-              : (direction > 0 ? 0.95 : 1.05);
-            const safeSpan = Math.max(1e-6, span * scale);
+            const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+            const safeSpan = Math.max(1e-6, span * zoomFactor);
+
+            const plotWidth = Math.max(1, rect.width - 148);
+            const relativeX = clamp((clientX - rect.left - 74) / plotWidth, 0, 1);
+            const cursorValue = min + span * relativeX;
+
             return {
               ...candidate,
-              xManualMin: Number((center - safeSpan / 2).toFixed(6)),
-              xManualMax: Number((center + safeSpan / 2).toFixed(6))
+              xManualMin: Number((cursorValue - safeSpan * relativeX).toFixed(6)),
+              xManualMax: Number((cursorValue + safeSpan * (1 - relativeX)).toFixed(6))
             };
           }
           return candidate;
@@ -2765,14 +2809,18 @@ export default function App() {
         const maxKey = `${axisZone}ManualMax`;
         const min = Number(candidate[minKey]);
         const max = Number(candidate[maxKey]);
-        const center = (min + max) / 2;
         const span = Math.max(1e-6, max - min);
-        const nextSpan = Math.max(1e-6, span - units * Math.max(span * 0.08, 0.02));
+        const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+        const safeSpan = Math.max(1e-6, span * zoomFactor);
+
+        const plotHeight = Math.max(1, rect.height - 60);
+        const relativeY = clamp((clientY - rect.top - 20) / plotHeight, 0, 1);
+        const cursorValue = max - span * relativeY;
 
         return {
           ...candidate,
-          [minKey]: Number((center - nextSpan / 2).toFixed(6)),
-          [maxKey]: Number((center + nextSpan / 2).toFixed(6))
+          [minKey]: Number((cursorValue - safeSpan * (1 - relativeY)).toFixed(6)),
+          [maxKey]: Number((cursorValue + safeSpan * relativeY).toFixed(6))
         };
       })
     );
@@ -4530,7 +4578,9 @@ export default function App() {
         { type: "delta", label: "Delta", tone: "window" },
         { type: "slope", label: "Pend", tone: "window" },
         { type: "std", label: "Std", tone: "window" },
-        { type: "rms", label: "RMS", tone: "window" }
+        { type: "rms", label: "RMS", tone: "window" },
+        { type: "errorPercen", label: "Error%", tone: "window" },
+        { type: "errorRela", label: "Error_Rela", tone: "window" }
       ]
     },
     {
@@ -4641,18 +4691,37 @@ export default function App() {
           const key = writePath[depth];
           return { ...node, [key]: writeNode(node[key], writePath, value, depth + 1) };
         };
+        
         const movedBlock = readNode(prev.block, payload.path);
+        const targetBlock = readNode(prev.block, path);
         if (!movedBlock) {
           return prev;
         }
-        const withoutSource = writeNode(prev.block, payload.path, null);
-        const nextBlock = writeNode(withoutSource, path, movedBlock);
+        
+        let nextBlock = prev.block;
+        nextBlock = writeNode(nextBlock, payload.path, targetBlock);
+        nextBlock = writeNode(nextBlock, path, movedBlock);
+
         return { ...prev, block: nextBlock, expression: nextBlock ? blockToExpression(nextBlock) : "" };
       });
       setFunctionMessage("");
       return;
     }
-    updateFunctionBlockAtPath(path, () => createFunctionBlockFromPayload(payload));
+    updateFunctionBlockAtPath(path, (oldNode) => {
+      const newBlock = createFunctionBlockFromPayload(payload);
+      if (oldNode && newBlock) {
+        if (binaryBlockSymbols[newBlock.type]) {
+          newBlock.left = oldNode;
+        } else if (unaryExpressionFunctions[newBlock.type]) {
+          newBlock.input = oldNode;
+        } else if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(newBlock.type)) {
+          if (oldNode.type === "variable" || oldNode.sourceId) {
+            newBlock.sourceId = oldNode.sourceId;
+          }
+        }
+      }
+      return newBlock;
+    });
   };
 
   const dropFunctionBlockToTrash = (event) => {
@@ -4686,7 +4755,21 @@ export default function App() {
       className={`function-palette__block function-palette__block--${item.tone || "operator"}`}
       draggable
       onDragStart={(event) => handleFunctionDragStart(event, item.kind ? item : { kind: "block", type: item.type })}
-      onDoubleClick={() => updateFunctionBlockAtPath([], () => createFunctionBlockFromPayload(item.kind ? item : { kind: "block", type: item.type }))}
+      onDoubleClick={() => updateFunctionBlockAtPath([], (oldNode) => {
+        const newBlock = createFunctionBlockFromPayload(item.kind ? item : { kind: "block", type: item.type });
+        if (oldNode && newBlock) {
+          if (binaryBlockSymbols[newBlock.type]) {
+            newBlock.left = oldNode;
+          } else if (unaryExpressionFunctions[newBlock.type]) {
+            newBlock.input = oldNode;
+          } else if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(newBlock.type)) {
+            if (oldNode.type === "variable" || oldNode.sourceId) {
+              newBlock.sourceId = oldNode.sourceId;
+            }
+          }
+        }
+        return newBlock;
+      })}
       title="Arrastra este bloque a una ranura"
     >
       {item.color ? <span className="function-palette__dot" style={{ background: item.color }} /> : null}
@@ -4911,6 +4994,9 @@ export default function App() {
             <div className="rx-stats">
               <span>{rxStats.sps.toFixed(1)} SPS</span>
               <span>{plotFps.toFixed(1)} FPS</span>
+              <span>{Number(rxStats.seqLost || 0)} Perdidos</span>
+              <span>{Number(rxStats.seqGaps || 0)} Huecos seq</span>
+              <span>{Number(rxStats.seqLast ?? 0)} Último seq</span>
             </div>
           </section>
 
@@ -4936,26 +5022,7 @@ export default function App() {
             </div>
           </section>
 
-          <section className="sidebar__section">
-            <h2>Métricas</h2>
-            <div className="channel-table">
-              {systemChannels.map((channel) => (
-                <div
-                  className="channel-row channel-row--system"
-                  key={channel.id}
-                  draggable
-                  onDragStart={(event) => handleChannelDragStart(event, channel.id)}
-                >
-                  <span
-                    className="channel-color"
-                    style={{ backgroundColor: channel.color }}
-                  />
-                  <span className="channel-name">{channel.name}</span>
-                  <span className="channel-value">{channel.value.toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-          </section>
+
 
           <section className="sidebar__section">
             <div className="sidebar__section-title">
@@ -5462,84 +5529,95 @@ export default function App() {
               {modal === "config" ? (
                 <div className="modal__form modal__section">
                   <h4>Básica</h4>
-                  <div className="performance-profile">
-                    <div>
-                      <strong>ESP32 + CH340 alto rendimiento</strong>
-                      <span>
-                        {serialThroughputEstimate.bytesPerSample.toFixed(1)} bytes/muestra disponibles a {baudRate} baud.
-                      </span>
-                      <span>
-                        Buffer estimado: {serialThroughputEstimate.bufferSamples.toLocaleString()} muestras.
-                      </span>
-                    </div>
-                    <button type="button" className="button-primary" onClick={applyEsp32Ch340HighSpeedProfile}>
-                      Aplicar 2 kSPS
-                    </button>
-                  </div>
+
                   {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
-                  <label>
-                    Canales por trama (0 = auto)
+                  <div className="config-grid">
+                    <div className="config-grid__header">Parámetro</div>
+                    <div className="config-grid__header">Actual</div>
+                    <div className="config-grid__header">Editar</div>
+
+                    <div className="config-grid__label">Canales por trama (0 = auto)</div>
+                    <input type="text" readOnly value={basicConfig.channelCount} />
                     <input
                       type="number"
                       min="0"
-                      value={basicConfig.channelCount}
-                      onChange={(event) =>
-                        updateBasicConfig("channelCount", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.channelCount ?? basicConfig.channelCount}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, channelCount: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    SPS (muestras/seg)
+
+                    <div className="config-grid__label">SPS (muestras/seg)</div>
+                    <input type="text" readOnly value={basicConfig.samplesPerSecond} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.samplesPerSecond}
-                      onChange={(event) => handleSamplesChange(event.target.value)}
+                      value={draftBasicConfig.samplesPerSecond ?? basicConfig.samplesPerSecond}
+                      onChange={(event) => setDraftBasicConfig(prev => {
+                        const sps = Number(event.target.value);
+                        return {
+                          ...prev,
+                          samplesPerSecond: sps,
+                          periodMs: sps > 0 ? Number((1000 / sps).toFixed(2)) : prev.periodMs
+                        };
+                      })}
                     />
-                  </label>
-                  <label>
-                    Periodo (ms)
+
+                    <div className="config-grid__label">Periodo (ms)</div>
+                    <input type="text" readOnly value={basicConfig.periodMs} />
                     <input
                       type="number"
                       min="1"
                       step="0.1"
-                      value={basicConfig.periodMs}
-                      onChange={(event) => handlePeriodChange(event.target.value)}
+                      value={draftBasicConfig.periodMs ?? basicConfig.periodMs}
+                      onChange={(event) => setDraftBasicConfig(prev => {
+                        const period = Number(event.target.value);
+                        return {
+                          ...prev,
+                          periodMs: period,
+                          samplesPerSecond: period > 0 ? Number((1000 / period).toFixed(2)) : prev.samplesPerSecond
+                        };
+                      })}
                     />
-                  </label>
-                  <label>
-                    Buffer (segundos)
+
+                    <div className="config-grid__label">Buffer (segundos)</div>
+                    <input type="text" readOnly value={basicConfig.bufferSeconds} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.bufferSeconds}
-                      onChange={(event) =>
-                        updateBasicConfig("bufferSeconds", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.bufferSeconds ?? basicConfig.bufferSeconds}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, bufferSeconds: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    Refresh UI (ms)
+
+                    <div className="config-grid__label">Refresh UI (ms)</div>
+                    <input type="text" readOnly value={basicConfig.refreshMs} />
                     <input
                       type="number"
                       min="16"
-                      value={basicConfig.refreshMs}
-                      onChange={(event) =>
-                        updateBasicConfig("refreshMs", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.refreshMs ?? basicConfig.refreshMs}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, refreshMs: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    Min. tramas válidas para iniciar
+
+                    <div className="config-grid__label">Min. tramas válidas para iniciar</div>
+                    <input type="text" readOnly value={basicConfig.minValidFrames} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.minValidFrames}
-                      onChange={(event) =>
-                        updateBasicConfig("minValidFrames", Math.max(1, Number(event.target.value) || 1))
-                      }
+                      value={draftBasicConfig.minValidFrames ?? basicConfig.minValidFrames}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, minValidFrames: Math.max(1, Number(event.target.value) || 1) }))}
                     />
-                  </label>
+                  </div>
+                  <div className="config-actions">
+                    <button type="button" onClick={() => {
+                      if (draftBasicConfig.channelCount !== undefined) updateBasicConfig("channelCount", draftBasicConfig.channelCount);
+                      if (draftBasicConfig.samplesPerSecond !== undefined) {
+                        handleSamplesChange(draftBasicConfig.samplesPerSecond);
+                      } else if (draftBasicConfig.periodMs !== undefined) {
+                        handlePeriodChange(draftBasicConfig.periodMs);
+                      }
+                      if (draftBasicConfig.bufferSeconds !== undefined) updateBasicConfig("bufferSeconds", draftBasicConfig.bufferSeconds);
+                      if (draftBasicConfig.refreshMs !== undefined) updateBasicConfig("refreshMs", draftBasicConfig.refreshMs);
+                      if (draftBasicConfig.minValidFrames !== undefined) updateBasicConfig("minValidFrames", draftBasicConfig.minValidFrames);
+                    }}>Aplicar cambios</button>
+                  </div>
                   <label>
                     Modo de ploteo
                     <select
