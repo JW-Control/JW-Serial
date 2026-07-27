@@ -4628,6 +4628,9 @@ export default function App() {
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData(functionDragMime, encodedPayload);
     event.dataTransfer.setData("text/plain", `jwserial-function:${encodedPayload}`);
+    if (payload?.kind === "placed") {
+      event.dataTransfer.setData("jw-function-kind-placed", "1");
+    }
   };
 
   const readFunctionDragPayload = (event) => {
@@ -4647,8 +4650,8 @@ export default function App() {
   const allowFunctionDrop = (event) => {
     if (Array.from(event.dataTransfer.types).includes(functionDragMime)) {
       event.preventDefault();
-      const payload = readFunctionDragPayload(event);
-      event.dataTransfer.dropEffect = payload?.kind === "placed" ? "move" : "copy";
+      const isPlaced = Array.from(event.dataTransfer.types).includes("jw-function-kind-placed");
+      event.dataTransfer.dropEffect = isPlaced ? "move" : "copy";
     }
   };
 
@@ -4781,6 +4784,7 @@ export default function App() {
     event.stopPropagation();
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData(functionDragMime, JSON.stringify({ kind: "placed", path }));
+    event.dataTransfer.setData("jw-function-kind-placed", "1");
   };
 
   const renderFunctionVariableSlot = (block, path) => {
