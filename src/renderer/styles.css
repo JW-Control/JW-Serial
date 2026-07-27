@@ -470,6 +470,10 @@ textarea {
   text-align: center;
 }
 
+.rx-stats span:last-child:nth-child(odd) {
+  grid-column: span 2;
+}
+
 .main {
   flex: 1;
   display: flex;

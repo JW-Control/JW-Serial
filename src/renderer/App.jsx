@@ -259,7 +259,7 @@ const buildPath = (points) =>
     .join(" ");
 
 const minStep = 0.05;
-const minYAxisStep = 0.0001;
+const minYAxisStep = 0.00001;
 
 const pickStep = (range, targetTicks = 6, minimumStep = minStep, multipliers = [5, 10]) => {
   if (range <= 0 || Number.isNaN(range)) {
@@ -282,7 +282,7 @@ const pickStep = (range, targetTicks = 6, minimumStep = minStep, multipliers = [
 };
 
 const pickYAxisStep = (range, targetTicks = 6) =>
-  pickStep(range, targetTicks, minYAxisStep, [1, 5, 10]);
+  pickStep(range, targetTicks, minYAxisStep, [1, 2, 2.5, 5, 10]);
 
 const getStepDivisionBase = (step) => {
   if (!Number.isFinite(step) || step <= 0) {
@@ -543,7 +543,7 @@ const formatTick = (value, step) => {
   if (step >= 0.001) {
     return rounded.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   }
-  return rounded.toFixed(4);
+  return rounded.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 };
 
 const downsamplePointsByPixel = (points) => {
