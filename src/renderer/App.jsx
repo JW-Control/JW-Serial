@@ -52,7 +52,11 @@ const FIRST_FRAME_GRACE_MS = 3000;
 
 /** Explains why no valid frame arrived, from the main-process counters. */
 const describeLinkProblem = (stats, baudRate) => {
-  if (!stats || stats.bytes === 0) {
+  if (!stats) {
+    return "No hubo tramas válidas. Revisa el monitor: sin líneas RX = el equipo no envía o es otro puerto; "
+      + "caracteres raros = baudrate distinto. (Si acabas de actualizar JW-Serial, reinícialo por completo.)";
+  }
+  if (stats.bytes === 0) {
     return "No llegó ningún byte. Verifica que el equipo esté enviando y que sea el puerto correcto. "
       + "Si es un ESP32 con CH340/CP210x, puede haber quedado en reset o en modo boot al abrir el puerto: "
       + "usa Configuración → Avanzada → DTR/RTS → Reinicio limpio.";

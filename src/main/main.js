@@ -27,6 +27,9 @@ let mainWindow = null;
 let activePort = null;
 let readBuffer = "";
 let validFrameStreak = 0;
+// "Min. tramas válidas" only gates the start of the stream (boot garbage);
+// once it started, a stray non-data line must not discard good frames.
+let streamStarted = false;
 let pendingFrames = [];
 let pendingRawLines = [];
 let droppedRawLines = 0;
@@ -222,18 +225,25 @@ const handleIncomingChunk = (chunk) => {
 
     const parsed = parseLine(line);
     if (!parsed) {
-      validFrameStreak = 0;
+      if (!streamStarted) {
+        validFrameStreak = 0;
+      }
       continue;
     }
 
     if (portConfig.expectedChannels > 0 && countDataValues(parsed, portConfig) !== portConfig.expectedChannels) {
-      validFrameStreak = 0;
+      if (!streamStarted) {
+        validFrameStreak = 0;
+      }
       continue;
     }
 
-    validFrameStreak += 1;
-    if (validFrameStreak < portConfig.minValidFrames) {
-      continue;
+    if (!streamStarted) {
+      validFrameStreak += 1;
+      if (validFrameStreak < portConfig.minValidFrames) {
+        continue;
+      }
+      streamStarted = true;
     }
 
     parsed.timestamp = receivedAt;
@@ -253,6 +263,7 @@ const cleanupPort = async () => {
   flushSerialBatch();
   readBuffer = "";
   validFrameStreak = 0;
+  streamStarted = false;
   if (!activePort) {
     return;
   }

@@ -3,7 +3,7 @@
 // merged pairwise into coarser levels. Drawing a long window then only needs
 // the extrema of ~one block group per pixel instead of every sample.
 
-const BLOCK_SIZE = 64;
+const BLOCK_SIZE = 16;
 const physicalIds = [];
 const physicalId = (index) => physicalIds[index] || (physicalIds[index] = `val${index}`);
 
@@ -157,7 +157,11 @@ export class LodCache {
     // provides roughly one drawable point per pixel and channel.
     const targetGroups = Math.max(256, Math.ceil(width / 2));
     const targetSamples = Math.max(2048, targetGroups * Math.max(1, channelIds.length) * 2);
-    if (view.length <= targetSamples) {
+    // Blocks are only worth it when there are more of them than groups:
+    // otherwise each block spans several pixels, only its min/max survive and
+    // periodic signals alias badly. In that range the raw samples are few
+    // enough for the per-pixel reduction done when drawing.
+    if (view.length <= targetSamples || view.length < targetGroups * BLOCK_SIZE * 2) {
       return view.toArray();
     }
 

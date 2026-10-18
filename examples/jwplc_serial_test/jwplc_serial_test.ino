@@ -67,6 +67,7 @@ static bool pendingGlitch = false;
 static char frame[160];
 static char commandBuffer[48];
 static size_t commandLength = 0;
+static uint32_t lastCommandCharMs = 0;
 
 // --------------------------------------------------------------- helpers
 
@@ -162,18 +163,28 @@ static void handleCommand(char *line) {
   }
 }
 
+static void runPendingCommand() {
+  if (commandLength) {
+    commandBuffer[commandLength] = '\0';
+    handleCommand(commandBuffer);
+    commandLength = 0;
+  }
+}
+
 static void readCommands() {
   while (Serial.available()) {
     char c = (char)Serial.read();
+    lastCommandCharMs = millis();
     if (c == '\r' || c == '\n') {
-      if (commandLength) {
-        commandBuffer[commandLength] = '\0';
-        handleCommand(commandBuffer);
-        commandLength = 0;
-      }
+      runPendingCommand();
     } else if (commandLength < sizeof(commandBuffer) - 1) {
       commandBuffer[commandLength++] = c;
     }
+  }
+  // Commands sent without a line ending ("Sin ajuste") run after 150 ms of
+  // silence, so they never get glued to the next command.
+  if (commandLength && millis() - lastCommandCharMs > 150) {
+    runPendingCommand();
   }
 }
 

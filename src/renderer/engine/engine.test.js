@@ -58,6 +58,15 @@ test("LOD selection keeps every extreme of the visible range", () => {
   assert.equal(selected.at(-1).sequence, 100000);
 });
 
+test("LOD selection returns raw samples when blocks would span several pixels", () => {
+  // 30 s at 240 SPS on an 800 px plot: block min/max alone would alias a 5 Hz sine.
+  const lod = new LodCache();
+  const samples = Array.from({ length: 7200 }, (_, index) => ({ sequence: index + 1, timestamp: index, values: [Math.sin(index)] }));
+  samples.forEach((sample) => lod.append(sample));
+  const view = { length: samples.length, at: (index) => samples[index], toArray: () => samples };
+  assert.equal(lod.select(view, ["val0"], 800), samples);
+});
+
 test("receive stats: SPS from timestamps, device jitter and sequence anomalies", () => {
   const stats = new ReceiveStats();
   const messages = [];
