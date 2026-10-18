@@ -170,3 +170,32 @@ test("line projection keeps per-pixel extremes", () => {
   assert.ok(yValues.some((y) => Math.abs(y - 20) < 1e-6), "keeps the maximum (top of plot)");
   assert.ok(yValues.some((y) => Math.abs(y - 260) < 1e-6), "keeps the minimum (bottom of plot)");
 });
+
+test("calibration applies scale, offset and filters, and recomputes history", async () => {
+  const { createCalibrationTransform } = await import("./calibration.js");
+  const transform = createCalibrationTransform([{ scale: 2, offset: 1 }, { filter: "average", filterValue: 2 }]);
+  assert.deepEqual(transform([1, 10], 0), [3, 10]);
+  assert.deepEqual(transform([2, 20], 10), [5, 15]);
+  assert.equal(createCalibrationTransform([{ scale: 1, offset: 0, filter: "none" }]), null);
+
+  withEngine((engine) => {
+    engine.configure({ bufferSeconds: 100, samplesPerSecond: 100 });
+    engine.ingestFrames(frames(10));
+    const rawFirst = engine.history.first().values[0];
+    engine.setCalibrations([{ scale: 1000, offset: 0 }]);
+    assert.ok(Math.abs(engine.history.first().values[0] - rawFirst * 1000) < 1e-9, "history recalibrated");
+    engine.ingestFrames(frames(1, { start: 10 }));
+    assert.ok(Math.abs(engine.history.last().values[0] - engine.history.last().rawValues[0] * 1000) < 1e-9);
+    engine.setCalibrations([]);
+    assert.equal(engine.history.first().values[0], rawFirst, "back to raw values");
+  });
+});
+
+test("alarms trigger after the minimum duration and clear", async () => {
+  const { AlarmMonitor } = await import("./alarms.js");
+  const monitor = new AlarmMonitor((sample, id) => sample.values[Number(id.slice(3))]);
+  monitor.setRules([{ id: "a", channelId: "val0", condition: "above", value: 5, minDurationSeconds: 0.05, enabled: true }]);
+  [1, 6, 7, 8, 9, 2].forEach((value, index) => monitor.check({ timestamp: index * 20, values: [value] }));
+  const events = monitor.drain();
+  assert.deepEqual(events.map((event) => [event.type, event.time]), [["trigger", 80], ["clear", 100]]);
+});

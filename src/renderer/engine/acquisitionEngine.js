@@ -7,6 +7,7 @@ import { extractFramePayload } from "../../shared/serialProtocol.js";
 import { HistoryView, SampleHistory } from "../lib/history.js";
 import { LodCache } from "../lib/lod.js";
 import { AlarmMonitor } from "./alarms.js";
+import { createCalibrationTransform } from "./calibration.js";
 import { createEmptyRxStats, ReceiveStats } from "./receiveStats.js";
 import { VirtualFunctionSet } from "./virtualFunctionSet.js";
 
@@ -77,6 +78,8 @@ export class AcquisitionEngine {
     this.alarmMonitor = new AlarmMonitor(readSampleValue);
     this.alarmListeners = new Set();
     this.recorder = null;
+    this.calibrations = [];
+    this.calibrate = null;
     // Replay mode: the history holds a loaded recording instead of live data.
     this.replay = null;
     this.snapshot = this.buildSnapshot();
@@ -186,7 +189,10 @@ export class AcquisitionEngine {
         continue;
       }
       this.updateChannelStructure(payload);
-      this.appendSample(payload, timestamp);
+      const sample = this.appendSample(payload, timestamp);
+      if (this.calibrate) {
+        this.latestValues = sample.values;
+      }
     }
     const alarmEvents = this.alarmMonitor.drain();
     if (alarmEvents.length) {
@@ -222,13 +228,19 @@ export class AcquisitionEngine {
   appendSample(payload, timestamp) {
     const count = this.channelStructure.count;
     this.sequence += 1;
+    const values = payload.values.length > count ? payload.values.slice(0, count) : payload.values;
     const sample = {
       sequence: this.sequence,
       externalSequence: payload.externalSequence,
       timestamp,
       xValue: payload.xValue,
-      values: payload.values.length > count ? payload.values.slice(0, count) : payload.values
+      values
     };
+    if (this.calibrate) {
+      // Keep the raw reading so a calibration change can recompute history.
+      sample.rawValues = values;
+      sample.values = this.calibrate(values, timestamp);
+    }
     if (!this.virtual.isEmpty) {
       sample.virtualValues = this.virtual.evaluate(sample);
       this.latestVirtualValues = sample.virtualValues;
@@ -245,6 +257,42 @@ export class AcquisitionEngine {
       this.lod.trimBefore(this.history.first().sequence);
     }
     this.dataVersion += 1;
+    return sample;
+  }
+
+  // ----------------------------------------------------------- calibration
+
+  /**
+   * Sets per-channel calibration (index = channel index) and reapplies it to
+   * the whole history from the raw readings, then recomputes functions.
+   */
+  setCalibrations(calibrations) {
+    const key = JSON.stringify(calibrations);
+    if (key === this.calibrationKey) {
+      return;
+    }
+    this.calibrationKey = key;
+    this.calibrations = calibrations;
+    if (this.replay) {
+      // Recordings already hold calibrated values; applied again on exit.
+      return;
+    }
+    this.calibrate = createCalibrationTransform(calibrations);
+    this.history.forEach((sample) => {
+      const raw = sample.rawValues || sample.values;
+      if (this.calibrate) {
+        sample.rawValues = raw;
+        sample.values = this.calibrate(raw, sample.timestamp);
+      } else {
+        sample.values = raw;
+        delete sample.rawValues;
+      }
+    });
+    const last = this.history.last();
+    if (last) {
+      this.latestValues = last.values;
+    }
+    this.setVirtualFunctions(this.virtualDefinitions, this.virtualChannels);
   }
 
   // --------------------------------------------------------------- alarms
@@ -328,6 +376,7 @@ export class AcquisitionEngine {
     this.stopRecording();
     this.clear();
     this.replay = { fileName, rows, decimation: data.decimation || 1 };
+    this.calibrate = null;
     this.history.setCapacity(Math.max(2, rows));
     this.channelStructure = { count: channelCount, names: data.names.slice(0, channelCount) };
     this.structureListeners.forEach((listener) => listener(this.channelStructure));
@@ -362,6 +411,7 @@ export class AcquisitionEngine {
     }
     this.replay = null;
     this.clear();
+    this.calibrate = createCalibrationTransform(this.calibrations);
     this.ensureCapacity(0, true);
   }
 

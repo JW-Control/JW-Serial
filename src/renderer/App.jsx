@@ -24,6 +24,10 @@ import ValuePanel from "./components/ValuePanel.jsx";
 import AnalysisView from "./components/AnalysisView.jsx";
 import Toasts from "./components/Toasts.jsx";
 import AlarmsModal from "./components/modals/AlarmsModal.jsx";
+import CommandsModal from "./components/modals/CommandsModal.jsx";
+import ReportModal from "./components/modals/ReportModal.jsx";
+import { buildReportHtml } from "./lib/report.js";
+import { noiseStatistics } from "./lib/spectrum.js";
 import { alarmThresholds, describeAlarm } from "./engine/alarms.js";
 import { formatReadout } from "./lib/plotOverlay.js";
 import Plot from "./components/Plot.jsx";
@@ -74,6 +78,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("plotter");
   const [panelChannels, setPanelChannels] = useState([]);
   const [alarmRules, setAlarmRules] = useState([]);
+  const [quickCommands, setQuickCommands] = useState([]);
   const [analysisSettings, setAnalysisSettings] = useState({
     channelId: "val0",
     seconds: 10,
@@ -112,6 +117,10 @@ export default function App() {
   const captureInProgressRef = useRef(false);
   const restoreReadyRef = useRef(false);
   const connectedAtRef = useRef(null);
+  // Session history for the report (independent of session_log.csv).
+  const sessionTimelineRef = useRef([]);
+  const alarmTriggerCountsRef = useRef(new Map());
+  const recordingsRef = useRef([]);
 
   // ---------------------------------------------------------- derived data
 
@@ -166,6 +175,11 @@ export default function App() {
   useEffect(() => {
     engine.setPaused(isPaused);
   }, [engine, isPaused]);
+
+  const calibrations = useMemo(() => channels.map((channel) => channel.calibration || null), [channels]);
+  useEffect(() => {
+    engine.setCalibrations(calibrations);
+  }, [engine, calibrations]);
 
   useEffect(() => {
     // Recompute virtual functions over the full history (single O(N) pass)
@@ -277,8 +291,9 @@ export default function App() {
     activeTab,
     panelChannels,
     alarmRules,
+    quickCommands,
     analysisSettings,
-    channels: channels.map(({ id, name, color, lineStyle, thickness }) => ({ id, name, color, lineStyle, thickness })),
+    channels: channels.map(({ id, name, color, lineStyle, thickness, calibration }) => ({ id, name, color, lineStyle, thickness, calibration })),
     virtualFunctions: virtualFunctions.map(({ id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled }) => ({
       id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled
     })),
@@ -320,6 +335,9 @@ export default function App() {
     }
     if (Array.isArray(parsed.alarmRules)) {
       setAlarmRules(parsed.alarmRules);
+    }
+    if (Array.isArray(parsed.quickCommands)) {
+      setQuickCommands(parsed.quickCommands);
     }
     if (parsed.analysisSettings && typeof parsed.analysisSettings === "object") {
       setAnalysisSettings((prev) => ({ ...prev, ...parsed.analysisSettings }));
@@ -364,7 +382,7 @@ export default function App() {
     if (restoreReadyRef.current) {
       writeJson(storageKeys.lastSession, buildConfigSnapshot());
     }
-  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, panelChannels, alarmRules, analysisSettings, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
+  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, panelChannels, alarmRules, quickCommands, analysisSettings, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
 
   const loadLastSession = () => {
     try {
@@ -465,6 +483,10 @@ export default function App() {
   // ----------------------------------------------------------- session log
 
   const appendSessionEvent = useEvent(async (type, detail = "", extras = {}) => {
+    sessionTimelineRef.current.push({ time: Date.now(), type, detail });
+    if (sessionTimelineRef.current.length > 2000) {
+      sessionTimelineRef.current.splice(0, sessionTimelineRef.current.length - 2000);
+    }
     const enabled = captureConfig.directory && captureConfig.label?.trim() && captureConfig.useSubfolder;
     if (!enabled || !window.jwSerial?.appendSessionEvent) {
       return;
@@ -663,6 +685,7 @@ export default function App() {
         write: (text) => window.jwSerial.writeRecording(text)
       });
       setRecording({ filePath: response.filePath, startedAt: Date.now(), columnsKey: recordingColumnsKey });
+      recordingsRef.current.push(response.filePath);
       engine.appendLog(`SYS > Grabando en ${response.filePath}`);
       appendSessionEvent("record_start", response.filePath);
     } catch (error) {
@@ -782,6 +805,7 @@ export default function App() {
         return;
       }
       engine.appendLog(`ALM > ${description} (valor ${formatReadout(event.value)})`);
+      alarmTriggerCountsRef.current.set(rule.id, (alarmTriggerCountsRef.current.get(rule.id) || 0) + 1);
       // A signal hovering around the threshold re-triggers often: notify (and
       // capture) at most once per rule every ALARM_NOTICE_COOLDOWN_MS.
       const now = Date.now();
@@ -815,6 +839,70 @@ export default function App() {
       .filter((rule) => rule.enabled !== false && rule.showOnPlot !== false)
       .map((rule) => ({ channelId: rule.channelId, values: alarmThresholds(rule), active: activeAlarmIds.includes(rule.id) })),
   [alarmRules, activeAlarmIds]);
+
+  // ---------------------------------------------------------------- report
+
+  const generateReport = async ({ title, notes, includePlots, format }) => {
+    const history = engine.history;
+    const channelsForStats = [...visibleChannels, ...virtualChannels].map((channel) => {
+      const values = [];
+      history.forEach((sample) => {
+        const value = engine.readValue(sample, channel.id);
+        if (Number.isFinite(value)) {
+          values.push(value);
+        }
+      });
+      const stats = noiseStatistics(values);
+      return { name: channel.name, unit: channel.calibration?.unit, ...(stats || { count: 0 }) };
+    });
+    const images = [];
+    if (includePlots) {
+      document.documentElement.classList.add("capture-clean");
+      try {
+        await waitForPaint();
+        for (const plot of plots) {
+          const element = plotElementsRef.current.get(plot.id);
+          if (element) {
+            images.push({ title: plot.title, dataUrl: await renderElementToPng(element) });
+          }
+        }
+      } finally {
+        document.documentElement.classList.remove("capture-clean");
+      }
+    }
+    const { rxStats } = engine.getSnapshot();
+    const html = buildReportHtml({
+      title,
+      notes,
+      label: captureConfig.label,
+      generatedAt: Date.now(),
+      connection: { port: selectedPort || manualPort, baudRate, sps: rxStats.sps, seqLost: rxStats.seqLost },
+      dataRange: { start: history.first()?.timestamp, end: history.last()?.timestamp, samples: history.length },
+      channels: channelsForStats,
+      alarms: alarmRules.map((rule) => ({
+        description: describeAlarm(rule, channelStyles.get(rule.channelId)?.name || rule.channelId),
+        triggers: alarmTriggerCountsRef.current.get(rule.id) || 0
+      })),
+      recordings: recordingsRef.current,
+      events: sessionTimelineRef.current,
+      images
+    });
+    try {
+      const response = await window.jwSerial.saveReport({
+        html,
+        format,
+        directory: captureConfig.directory,
+        label: captureConfig.label,
+        useSubfolder: captureConfig.useSubfolder
+      });
+      if (response?.ok) {
+        appendSessionEvent("report", response.filePath);
+      }
+      return response;
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error) };
+    }
+  };
 
   // -------------------------------------------------------------- captures
 
@@ -1070,7 +1158,7 @@ export default function App() {
   const openVariableMenu = useCallback((event, channelId) => {
     event.preventDefault();
     const x = clamp(event.clientX, 8, window.innerWidth - 250 - 8);
-    const y = clamp(event.clientY, 8, window.innerHeight - 236 - 8);
+    const y = clamp(event.clientY, 8, Math.max(8, window.innerHeight - 480));
     setVariableMenu({ channelId, x, y });
     setContextMenu(null);
   }, []);
@@ -1261,7 +1349,13 @@ export default function App() {
             ))}
           </div>
         ) : activeTab === "monitor" ? (
-          <Monitor engine={engine} terminator={terminator} onTerminatorChange={setTerminator} />
+          <Monitor
+            engine={engine}
+            terminator={terminator}
+            onTerminatorChange={setTerminator}
+            commands={quickCommands}
+            onEditCommands={() => setModal("commands")}
+          />
         ) : activeTab === "panel" ? (
           <ValuePanel engine={engine} channels={allChannels} selectedIds={panelChannels} onSelectionChange={setPanelChannels} />
         ) : (
@@ -1330,6 +1424,15 @@ export default function App() {
           onClose={closeModal}
         />
       ) : null}
+      {modal === "report" ? (
+        <ReportModal
+          defaultTitle={`Reporte de prueba${captureConfig.label ? ` · ${captureConfig.label}` : ""}`}
+          hasDirectory={Boolean(captureConfig.directory)}
+          onGenerate={generateReport}
+          onClose={closeModal}
+        />
+      ) : null}
+      {modal === "commands" ? <CommandsModal commands={quickCommands} onChange={setQuickCommands} onClose={closeModal} /> : null}
       <Toasts toasts={toasts} onDismiss={dismissToast} />
 
       {startupRestorePrompt ? <StartupRestorePrompt onLoad={loadLastSession} onFresh={startEmptySession} /> : null}

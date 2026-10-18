@@ -480,7 +480,7 @@ const Plot = ({
       channelId: assignment.channelId,
       hidden: (plot.hiddenChannels || []).includes(assignment.channelId),
       axis: assignment.axis.toUpperCase(),
-      name: style?.name || assignment.channelId,
+      name: style?.calibration?.unit ? `${style.name} [${style.calibration.unit}]` : style?.name || assignment.channelId,
       color: style?.color || "#64748b"
     };
   });

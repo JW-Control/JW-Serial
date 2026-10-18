@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("jwSerial", {
   writeRecording: (text) => ipcRenderer.invoke("record:write", text),
   stopRecording: () => ipcRenderer.invoke("record:stop"),
   loadRecording: () => ipcRenderer.invoke("record:load"),
+  saveReport: (options) => ipcRenderer.invoke("report:save", options),
   onFrames: (handler) => {
     const wrapped = (_event, payload) => handler(payload);
     ipcRenderer.on("serial:frames", wrapped);

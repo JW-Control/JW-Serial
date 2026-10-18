@@ -73,7 +73,10 @@ const ValuePanel = ({ engine, channels, selectedIds, onSelectionChange }) => {
             return (
               <section key={channel.id} className="value-card" style={{ "--card-color": channel.color }}>
                 <header>{channel.name}</header>
-                <strong>{formatReadout(rawChannelValue(snapshot, channel.id))}</strong>
+                <strong>
+                  {formatReadout(rawChannelValue(snapshot, channel.id))}
+                  {channel.calibration?.unit ? <small> {channel.calibration.unit}</small> : null}
+                </strong>
                 <footer>
                   <span>min {formatReadout(range?.min)}</span>
                   <span>max {formatReadout(range?.max)}</span>

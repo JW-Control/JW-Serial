@@ -55,7 +55,10 @@ const ChannelRows = ({ engine, channels, virtual, onClick, onContextMenu }) => {
     >
       <span className="channel-color" style={{ backgroundColor: channel.color }} />
       <span className="channel-name">{channel.name}</span>
-      <span className="channel-value">{channel.error ? "error" : liveChannelValue(snapshot, channel).toFixed(2)}</span>
+      <span className="channel-value">
+        {channel.error ? "error" : liveChannelValue(snapshot, channel).toFixed(2)}
+        {channel.calibration?.unit ? <small className="channel-unit"> {channel.calibration.unit}</small> : null}
+      </span>
     </div>
   ));
 };
@@ -282,9 +285,14 @@ const Sidebar = ({
                 Cargar conf.
               </button>
             </div>
-            <button type="button" onClick={onOpenRecording} title="Abre un CSV grabado o exportado para revisarlo con zoom, cursores y funciones">
-              Abrir grabación
-            </button>
+            <div className="actions__row actions__row--split">
+              <button type="button" onClick={onOpenRecording} title="Abre un CSV grabado o exportado para revisarlo con zoom, cursores y funciones">
+                Abrir grabación
+              </button>
+              <button type="button" onClick={() => onOpenModal("report")} title="Genera un reporte PDF/HTML de la sesión">
+                Reporte
+              </button>
+            </div>
           </div>
           {captureMessage ? <p className="connection-status">{captureMessage}</p> : null}
         </section>

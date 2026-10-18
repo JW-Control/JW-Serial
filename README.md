@@ -29,6 +29,9 @@ La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG a
 - **Grabación continua** de todas las muestras a CSV (opcionalmente al conectar), con un archivo nuevo si cambian las columnas.
 - **Modo revisión**: abre una grabación o un CSV exportado y analízalo con zoom, cursores, funciones y capturas.
 - **Alarmas** por umbral (mayor, menor, dentro o fuera de rango, con duración mínima): aviso con sonido, evento en `session_log.csv`, captura automática y línea de umbral en los plots.
+- **Calibración por canal**: escala, offset, unidad y filtro (media móvil o pasa bajos); se recalcula todo el historial.
+- **Comandos rápidos** en el monitor: texto o bytes hex, secuencias de varias líneas con retardo.
+- **Reporte de sesión** en PDF o HTML con estadísticas, gráficos, alarmas, grabaciones, eventos y notas.
 - Vista **Análisis**: ruido RMS y pico a pico, bits efectivos y bits sin ruido del ADC, espectro FFT (ventana Hann) e histograma con la gaussiana teórica.
 - Escalas canónicas para ejes y grillas legibles.
 - Autoescalado Y1/Y2 sobre el tramo visible cuando X está en modo manual.
@@ -306,6 +309,18 @@ La vista **Análisis** toma los últimos N segundos de una señal y muestra:
 - Con la **escala completa** del ADC (en las mismas unidades): bits efectivos = log2(FSR / RMS) y bits sin ruido = log2(FSR / p-p), las cifras que usan las hojas de datos de convertidores como el AD7124.
 - Espectro de amplitud (FFT de hasta 65 536 puntos, ventana Hann, en dB o lineal) con el pico dominante.
 - Histograma con la curva gaussiana esperada superpuesta.
+
+## Calibración
+
+Clic derecho sobre una variable → **Calibración**: el valor mostrado y graficado es `lectura × escala + offset`, opcionalmente suavizado con una media móvil de N muestras o un filtro pasa bajos de primer orden (frecuencia de corte en Hz, usando el tiempo real entre muestras). La unidad aparece en la barra lateral, la leyenda, el tooltip, las mediciones, el panel y el reporte. Al cambiar la calibración se recalcula todo el historial a partir de las lecturas crudas; las grabaciones guardan el valor calibrado.
+
+## Comandos Rápidos
+
+En el **Monitor**, **+ Comandos rápidos** permite guardar botones que envían texto (con el terminador del monitor o uno propio) o bytes en hexadecimal (`AA 55 01`). Si el contenido tiene varias líneas, se envían en orden con el retardo configurado; varios clics seguidos se encolan sin mezclarse. Los comandos se guardan con la configuración y las plantillas.
+
+## Reporte de Sesión
+
+**Reporte** genera un PDF (o HTML) con: lote, puerto, rango de datos y SPS; estadísticas de cada señal (promedio, ruido RMS, mínimo, máximo, pico a pico); imágenes de los plots; alarmas con su cantidad de disparos; grabaciones; eventos de la sesión y tus notas. Se guarda en la carpeta de capturas (o donde elijas si no hay carpeta).
 
 ## Registro de Sesión
 

@@ -1,12 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEngineSnapshot } from "../hooks/useEngineSnapshot.js";
+import { buildCommandMessages, terminatorSuffix } from "../lib/commands.js";
 
-const terminatorSuffix = {
-  none: "",
-  nl: "\n",
-  cr: "\r",
-  nlcr: "\n\r"
-};
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const pad = (value, length = 2) => String(value).padStart(length, "0");
 
@@ -15,7 +11,7 @@ export const formatLogTime = (time) => {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 };
 
-const Monitor = ({ engine, terminator, onTerminatorChange }) => {
+const Monitor = ({ engine, terminator, onTerminatorChange, commands = [], onEditCommands }) => {
   const { log } = useEngineSnapshot(engine);
   const [message, setMessage] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -65,6 +61,35 @@ const Monitor = ({ engine, terminator, onTerminatorChange }) => {
     }
   };
 
+  // Commands run one after another, even if buttons are clicked quickly.
+  const commandQueueRef = useRef(Promise.resolve());
+  const runCommand = (command) => {
+    commandQueueRef.current = commandQueueRef.current.then(() => sendCommand(command));
+  };
+
+  const sendCommand = async (command) => {
+    let messages;
+    try {
+      messages = buildCommandMessages(command, terminator);
+    } catch (error) {
+      engine.appendLog(`SYS > Comando "${command.label}" inválido: ${error.message}`);
+      return;
+    }
+    for (const [index, message] of messages.entries()) {
+      if (index > 0 && command.delayMs > 0) {
+        await wait(command.delayMs);
+      }
+      const response = await window.jwSerial?.sendMessage?.(message.bytes ? { bytes: message.bytes } : message.text);
+      if (!response?.ok) {
+        engine.appendLog(`SYS > No se pudo enviar "${command.label}": ${response?.error || "puerto no disponible"}`);
+        return;
+      }
+      engine.appendLog(message.bytes
+        ? `TX > [hex] ${message.bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join(" ")}`
+        : `TX > ${message.label}`);
+    }
+  };
+
   return (
     <div className="monitor">
       <div className="monitor__toolbar">
@@ -106,6 +131,16 @@ const Monitor = ({ engine, terminator, onTerminatorChange }) => {
             </p>
           ))
         )}
+      </div>
+      <div className="monitor__commands">
+        {commands.map((command) => (
+          <button key={command.id} type="button" onClick={() => runCommand(command)} title={command.payload}>
+            {command.label}
+          </button>
+        ))}
+        <button type="button" className="monitor__command--edit" onClick={onEditCommands}>
+          {commands.length ? "Editar comandos" : "+ Comandos rápidos"}
+        </button>
       </div>
       <div className="monitor__controls">
         <input

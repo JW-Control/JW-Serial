@@ -64,6 +64,11 @@ const STAT_MODES = [
   { mode: "max", field: "statMaxTargets", opacity: 0.65 }
 ];
 
+const withUnit = (style, fallback) => {
+  const name = style?.name || fallback;
+  return style?.calibration?.unit ? `${name} [${style.calibration.unit}]` : name;
+};
+
 /** X is always navigable; Y axes only when in manual mode. */
 export const isAxisEditable = (plot, axis) => (axis === "x" ? true : plot[`${axis}Mode`] === "manual");
 
@@ -293,7 +298,7 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
     firstRawSequence,
     yAssignments: yAssignments.map((assignment) => ({
       ...assignment,
-      name: styles.get(assignment.channelId)?.name || assignment.channelId,
+      name: withUnit(styles.get(assignment.channelId), assignment.channelId),
       color: styles.get(assignment.channelId)?.color || "#2563eb"
     })),
     plotArea: { left: padding.left, top: padding.top, width: plotWidth, height: plotHeight }
