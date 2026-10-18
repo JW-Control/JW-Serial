@@ -2124,3 +2124,254 @@ textarea {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+
+.record-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.record-button__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dc2626;
+}
+
+.record-button--active {
+  border-color: #dc2626 !important;
+  color: #dc2626;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-button--active .record-button__dot {
+  animation: record-pulse 1s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.alarm-indicator--active {
+  border-color: #dc2626 !important;
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+}
+
+.replay-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.replay-banner button {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-control);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.alarm-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.alarm-rule--active {
+  border-color: #dc2626;
+  box-shadow: inset 4px 0 0 #dc2626;
+}
+
+.alarm-rule header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.alarm-rule header .checkbox-row {
+  flex: 1;
+}
+
+.alarm-rule__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.alarm-rule__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.alarm-rule__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 380px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-strong);
+  border-left: 5px solid var(--color-primary);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 8px 24px var(--color-shadow);
+  font-size: 13px;
+}
+
+.toast div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toast span {
+  color: var(--color-muted);
+}
+
+.toast--alarm {
+  border-left-color: #dc2626;
+}
+
+.toast--ok {
+  border-left-color: #16a34a;
+}
+
+.toast button {
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.analysis {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px;
+  min-height: 0;
+  overflow: auto;
+  background: var(--color-bg);
+}
+
+.analysis__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.analysis__controls label:not(.checkbox-row) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.analysis__controls input,
+.analysis__controls select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-strong);
+  min-width: 120px;
+}
+
+.analysis__controls button {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-control);
+  cursor: pointer;
+}
+
+.analysis__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.analysis-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.analysis-stat span {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.analysis-stat strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.analysis__charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+}
+
+.analysis__charts section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.analysis__charts h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.analysis__charts canvas {
+  width: 100%;
+  height: 300px;
+}

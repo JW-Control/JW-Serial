@@ -2,6 +2,7 @@ import React from "react";
 import { commonBaudRates } from "../constants.js";
 import { useEngineSnapshot } from "../hooks/useEngineSnapshot.js";
 import CaptureButton from "./CaptureButton.jsx";
+import RecordButton from "./RecordButton.jsx";
 import { liveChannelValue, startChannelDrag } from "./channelDrag.js";
 
 const statusLabel = (isPaused, connectionStatus) => {
@@ -87,7 +88,14 @@ const Sidebar = ({
   captureConfig,
   nextCaptureAt,
   onCapture,
-  captureMessage
+  captureMessage,
+  recording,
+  onStartRecording,
+  onStopRecording,
+  onOpenRecording,
+  isReplay,
+  alarmCount,
+  activeAlarmCount
 }) => {
   const statusTone = isPaused
     ? "paused"
@@ -230,9 +238,25 @@ const Sidebar = ({
                 CSV
               </button>
             </div>
-            <button type="button" onClick={() => onOpenModal("event")} title="Atajo: E">
-              Evento
-            </button>
+            <RecordButton
+              engine={engine}
+              recording={recording}
+              onStart={onStartRecording}
+              onStop={onStopRecording}
+              disabled={isReplay}
+            />
+            <div className="actions__row actions__row--split">
+              <button type="button" onClick={() => onOpenModal("event")} title="Atajo: E">
+                Evento
+              </button>
+              <button
+                type="button"
+                className={activeAlarmCount ? "alarm-indicator--active" : ""}
+                onClick={() => onOpenModal("alarms")}
+              >
+                {activeAlarmCount ? `Alarmas · ${activeAlarmCount} activa(s)` : `Alarmas${alarmCount ? ` (${alarmCount})` : ""}`}
+              </button>
+            </div>
             <div className="actions__row actions__row--capture">
               <CaptureButton
                 captureConfig={captureConfig}
@@ -258,6 +282,9 @@ const Sidebar = ({
                 Cargar conf.
               </button>
             </div>
+            <button type="button" onClick={onOpenRecording} title="Abre un CSV grabado o exportado para revisarlo con zoom, cursores y funciones">
+              Abrir grabación
+            </button>
           </div>
           {captureMessage ? <p className="connection-status">{captureMessage}</p> : null}
         </section>

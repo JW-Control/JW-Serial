@@ -6,10 +6,12 @@
 import { extractFramePayload } from "../../shared/serialProtocol.js";
 import { HistoryView, SampleHistory } from "../lib/history.js";
 import { LodCache } from "../lib/lod.js";
+import { AlarmMonitor } from "./alarms.js";
 import { createEmptyRxStats, ReceiveStats } from "./receiveStats.js";
 import { VirtualFunctionSet } from "./virtualFunctionSet.js";
 
 const MAX_LOG_LINES = 400;
+const RECORDER_FLUSH_MS = 500;
 const MAX_LOG_LINES_PER_FLUSH = 120;
 const BUFFER_HEADROOM = 1.25;
 const physicalIndexCache = new Map();
@@ -72,6 +74,11 @@ export class AcquisitionEngine {
     this.fps = 0;
     this.listeners = new Set();
     this.structureListeners = new Set();
+    this.alarmMonitor = new AlarmMonitor(readSampleValue);
+    this.alarmListeners = new Set();
+    this.recorder = null;
+    // Replay mode: the history holds a loaded recording instead of live data.
+    this.replay = null;
     this.snapshot = this.buildSnapshot();
     this.flushTimer = null;
     this.lastFlushAt = 0;
@@ -88,7 +95,9 @@ export class AcquisitionEngine {
 
   configure(patch) {
     this.config = { ...this.config, ...patch };
-    this.ensureCapacity(this.stats?.measuredRate() || 0, true);
+    if (!this.replay) {
+      this.ensureCapacity(this.stats?.measuredRate() || 0, true);
+    }
   }
 
   /**
@@ -157,6 +166,9 @@ export class AcquisitionEngine {
     if (frames.length) {
       this.lastIngestAt = now();
     }
+    if (this.replay) {
+      return;
+    }
     for (const frame of frames) {
       const payload = extractFramePayload(frame, payloadOptions);
       const timestamp = Number(frame.timestamp) || now();
@@ -175,6 +187,12 @@ export class AcquisitionEngine {
       }
       this.updateChannelStructure(payload);
       this.appendSample(payload, timestamp);
+    }
+    const alarmEvents = this.alarmMonitor.drain();
+    if (alarmEvents.length) {
+      // Notify outside the ingest path: alarm actions (sound, notifications,
+      // captures) must never delay frame processing.
+      setTimeout(() => this.alarmListeners.forEach((listener) => listener(alarmEvents)), 0);
     }
     this.scheduleFlush();
   }
@@ -215,12 +233,136 @@ export class AcquisitionEngine {
       sample.virtualValues = this.virtual.evaluate(sample);
       this.latestVirtualValues = sample.virtualValues;
     }
+    if (this.alarmMonitor.rules.length && !this.loadingReplay) {
+      this.alarmMonitor.check(sample);
+    }
+    if (this.recorder) {
+      this.recordSample(sample);
+    }
     const evicted = this.history.push(sample);
     this.lod.append(sample);
     if (evicted && this.sequence % 64 === 0) {
       this.lod.trimBefore(this.history.first().sequence);
     }
     this.dataVersion += 1;
+  }
+
+  // --------------------------------------------------------------- alarms
+
+  setAlarmRules(rules) {
+    this.alarmMonitor.setRules(rules);
+  }
+
+  onAlarm(listener) {
+    this.alarmListeners.add(listener);
+    return () => this.alarmListeners.delete(listener);
+  }
+
+  get activeAlarmIds() {
+    return this.alarmMonitor.activeIds;
+  }
+
+  // ------------------------------------------------------------ recording
+
+  /**
+   * Starts streaming every stored sample as a CSV row. `columns` lists the
+   * channel ids to write after the fixed time/seq/x columns; `write(text)`
+   * receives batches of rows about twice per second.
+   */
+  startRecording({ columns, write }) {
+    this.stopRecording();
+    this.recorder = { columns, write, rows: [], count: 0, timer: setInterval(() => this.flushRecording(), RECORDER_FLUSH_MS) };
+  }
+
+  recordSample(sample) {
+    const { recorder } = this;
+    const cells = [
+      new Date(sample.timestamp).toISOString(),
+      sample.timestamp.toFixed(3),
+      sample.externalSequence ?? "",
+      sample.xValue ?? ""
+    ];
+    for (const channelId of recorder.columns) {
+      const value = readSampleValue(sample, channelId);
+      cells.push(Number.isFinite(value) ? value : "");
+    }
+    recorder.rows.push(cells.join(","));
+    recorder.count += 1;
+  }
+
+  flushRecording() {
+    const { recorder } = this;
+    if (recorder?.rows.length) {
+      const text = `${recorder.rows.join("\n")}\n`;
+      recorder.rows = [];
+      recorder.write(text);
+    }
+  }
+
+  /** Stops recording after writing pending rows. Returns the row count. */
+  stopRecording() {
+    if (!this.recorder) {
+      return 0;
+    }
+    this.flushRecording();
+    clearInterval(this.recorder.timer);
+    const { count } = this.recorder;
+    this.recorder = null;
+    return count;
+  }
+
+  get recordedRows() {
+    return this.recorder ? this.recorder.count : 0;
+  }
+
+  // --------------------------------------------------------------- replay
+
+  /**
+   * Loads a recording into the history (review mode). `data` holds
+   * `timestamps`, optional `xValues`/`sequences` and one Float64Array per
+   * channel in `columns`.
+   */
+  loadRecording(data, fileName) {
+    const rows = data.timestamps.length;
+    const channelCount = data.columns.length;
+    this.stopRecording();
+    this.clear();
+    this.replay = { fileName, rows, decimation: data.decimation || 1 };
+    this.history.setCapacity(Math.max(2, rows));
+    this.channelStructure = { count: channelCount, names: data.names.slice(0, channelCount) };
+    this.structureListeners.forEach((listener) => listener(this.channelStructure));
+    // Functions are recomputed in one pass at the end; alarms do not fire
+    // for recorded data.
+    const definitions = this.virtualDefinitions;
+    this.virtual = new VirtualFunctionSet([], [], readSampleValue);
+    this.loadingReplay = true;
+    for (let row = 0; row < rows; row += 1) {
+      const values = new Array(channelCount);
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        values[channel] = data.columns[channel][row];
+      }
+      const xValue = data.xValues ? data.xValues[row] : Number.NaN;
+      const sequence = data.sequences ? data.sequences[row] : Number.NaN;
+      this.appendSample({
+        values,
+        xValue: Number.isFinite(xValue) ? xValue : null,
+        externalSequence: Number.isFinite(sequence) ? sequence : null
+      }, data.timestamps[row]);
+      if (row === rows - 1) {
+        this.latestValues = values;
+      }
+    }
+    this.loadingReplay = false;
+    this.setVirtualFunctions(definitions, this.virtualChannels);
+  }
+
+  exitReplay() {
+    if (!this.replay) {
+      return;
+    }
+    this.replay = null;
+    this.clear();
+    this.ensureCapacity(0, true);
   }
 
   ingestRawLines(payload) {
@@ -261,6 +403,7 @@ export class AcquisitionEngine {
     this.history.clear();
     this.lod.clear();
     this.stats.reset();
+    this.alarmMonitor.reset();
     this.lastIngestAt = null;
     this.virtual = new VirtualFunctionSet(this.virtualDefinitions, this.virtualChannels, readSampleValue);
     this.sequence = 0;
@@ -296,20 +439,20 @@ export class AcquisitionEngine {
       return 0;
     }
     const span = (this.history.last().timestamp - this.history.first().timestamp) / 1000;
-    return Math.min(span, Number(this.config.bufferSeconds) || span);
+    return this.replay ? span : Math.min(span, Number(this.config.bufferSeconds) || span);
   }
 
   /**
    * Time-based view of the history: the last `windowSeconds` (defaults to
    * the buffer length) ending `offsetSeconds` before the newest sample.
    */
-  getView(windowSeconds = this.config.bufferSeconds, offsetSeconds = 0) {
+  getView(windowSeconds = this.replay ? Number.POSITIVE_INFINITY : this.config.bufferSeconds, offsetSeconds = 0) {
     const { history } = this;
     if (!history.length) {
       return new HistoryView(history, 0, 0);
     }
     const end = history.last().timestamp - Math.max(0, offsetSeconds) * 1000;
-    const start = end - Math.max(0, windowSeconds) * 1000;
+    const start = Number.isFinite(windowSeconds) ? end - Math.max(0, windowSeconds) * 1000 : Number.NEGATIVE_INFINITY;
     const endIndex = offsetSeconds > 0 ? history.lowerBoundByTime(end + 1e-6) : history.length;
     const startIndex = history.lowerBoundByTime(start);
     return new HistoryView(history, startIndex, Math.max(startIndex, endIndex));

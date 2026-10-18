@@ -1,5 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -37,6 +39,8 @@ let portConfig = {
 };
 let acceptLine = () => true;
 const captureCounters = new Map();
+const MAX_REPLAY_ROWS = 1_000_000;
+let recording = null;
 
 // Monotonic, sub-millisecond clock expressed as epoch milliseconds. Unlike
 // Date.now() it never jumps when the OS adjusts the wall clock.
@@ -452,6 +456,153 @@ ipcMain.handle("session:append-event", async (_event, options) => {
   return { ok: true, filePath };
 });
 
+const timestampForFile = () => {
+  const now = new Date();
+  return `${pad2(now.getFullYear() % 100)}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+};
+
+const closeRecording = () =>
+  new Promise((resolve) => {
+    if (!recording) {
+      resolve(null);
+      return;
+    }
+    const { stream, filePath } = recording;
+    recording = null;
+    stream.end(() => resolve(filePath));
+  });
+
+ipcMain.handle("record:start", async (_event, options) => {
+  await closeRecording();
+  const baseDirectory = options?.directory;
+  if (!baseDirectory) {
+    return { ok: false, error: "Elige una carpeta de capturas para guardar las grabaciones." };
+  }
+  const label = sanitizePathPart(options?.label);
+  const directory = options?.useSubfolder && label ? path.join(baseDirectory, label) : baseDirectory;
+  await fs.mkdir(directory, { recursive: true });
+  const filePath = path.join(directory, `${label ? `${label}_` : ""}Datos_${timestampForFile()}.csv`);
+  const stream = createWriteStream(filePath, { flags: "a", encoding: "utf8" });
+  await new Promise((resolve, reject) => {
+    stream.once("open", resolve);
+    stream.once("error", reject);
+  });
+  stream.on("error", (error) => {
+    emitToRenderer("serial:status", { type: "record-error", message: `Error de grabación: ${error.message}` });
+  });
+  stream.write(`${options.header.map(csvCell).join(",")}\n`);
+  recording = { stream, filePath };
+  return { ok: true, filePath };
+});
+
+ipcMain.handle("record:write", async (_event, text) => {
+  if (!recording) {
+    return { ok: false };
+  }
+  recording.stream.write(text);
+  return { ok: true };
+});
+
+ipcMain.handle("record:stop", async () => {
+  const filePath = await closeRecording();
+  return { ok: true, filePath };
+});
+
+/** Growable Float64Array column for streaming parses. */
+const createColumn = (capacity) => ({ data: new Float64Array(Math.max(16, capacity)), length: 0 });
+const pushColumn = (column, value) => {
+  if (column.length === column.data.length) {
+    const grown = new Float64Array(column.data.length * 2);
+    grown.set(column.data);
+    column.data = grown;
+  }
+  column.data[column.length] = value;
+  column.length += 1;
+};
+const finishColumn = (column) => column.data.slice(0, column.length);
+const parseCell = (text) => (text === undefined || text.trim() === "" ? Number.NaN : Number(text));
+
+ipcMain.handle("record:load", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Abrir grabación",
+    properties: ["openFile"],
+    filters: [{ name: "CSV", extensions: ["csv"] }]
+  });
+  if (result.canceled || !result.filePaths?.[0]) {
+    return { ok: false, canceled: true };
+  }
+  const filePath = result.filePaths[0];
+  const { size } = await fs.stat(filePath);
+  const lines = readline.createInterface({ input: createReadStream(filePath, { encoding: "utf8" }), crlfDelay: Infinity });
+
+  let header = null;
+  let layout = null;
+  let rowIndex = 0;
+  let bytesSeen = 0;
+  let stride = 1;
+  let columns = null;
+  for await (const line of lines) {
+    if (!header) {
+      header = line.split(",").map((cell) => cell.trim().replace(/^"|"$/g, ""));
+      const find = (...names) => header.findIndex((name) => names.includes(name.toLowerCase()));
+      const reserved = new Set(["time_iso", "timestamp_ms", "timestamp", "seq", "x", "xvalue"]);
+      layout = {
+        timestamp: find("timestamp_ms", "timestamp"),
+        sequence: find("seq"),
+        x: find("x", "xvalue"),
+        channels: header
+          .map((name, index) => ({ name, index }))
+          .filter(({ name }) => !reserved.has(name.toLowerCase()) && !name.startsWith("fn:"))
+      };
+      continue;
+    }
+    if (!line.trim()) {
+      continue;
+    }
+    bytesSeen += line.length + 1;
+    if (rowIndex === 2000) {
+      // Estimate the row count from the average line length and decimate
+      // so the review stays within MAX_REPLAY_ROWS.
+      const estimatedRows = Math.ceil(size / (bytesSeen / rowIndex));
+      stride = Math.max(1, Math.ceil(estimatedRows / MAX_REPLAY_ROWS));
+    }
+    if (!columns) {
+      const capacity = Math.min(MAX_REPLAY_ROWS, Math.ceil(size / Math.max(8, line.length)));
+      columns = {
+        timestamps: createColumn(capacity),
+        sequences: createColumn(capacity),
+        xValues: createColumn(capacity),
+        channels: layout.channels.map(() => createColumn(capacity))
+      };
+    }
+    if (rowIndex % stride === 0 && columns.timestamps.length < MAX_REPLAY_ROWS) {
+      const cells = line.split(",");
+      const timestamp = layout.timestamp >= 0 ? parseCell(cells[layout.timestamp]) : rowIndex * 10;
+      pushColumn(columns.timestamps, Number.isFinite(timestamp) ? timestamp : rowIndex * 10);
+      pushColumn(columns.sequences, layout.sequence >= 0 ? parseCell(cells[layout.sequence]) : Number.NaN);
+      pushColumn(columns.xValues, layout.x >= 0 ? parseCell(cells[layout.x]) : Number.NaN);
+      layout.channels.forEach(({ index }, channel) => pushColumn(columns.channels[channel], parseCell(cells[index])));
+    }
+    rowIndex += 1;
+  }
+
+  if (!columns || !layout.channels.length) {
+    return { ok: false, error: "El archivo no tiene datos o columnas reconocibles." };
+  }
+  return {
+    ok: true,
+    filePath,
+    fileName: path.basename(filePath),
+    names: layout.channels.map(({ name }) => name),
+    timestamps: finishColumn(columns.timestamps),
+    sequences: layout.sequence >= 0 ? finishColumn(columns.sequences) : null,
+    xValues: layout.x >= 0 ? finishColumn(columns.xValues) : null,
+    columns: columns.channels.map(finishColumn),
+    decimation: stride,
+    totalRows: rowIndex
+  };
+});
+
 ipcMain.handle("capture:plot", async (_event, options) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { ok: false, error: "No hay ventana activa." };
@@ -506,14 +657,14 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", (event) => {
-  if (isQuitting || !activePort) {
+  if (isQuitting || (!activePort && !recording)) {
     return;
   }
   // Electron does not await async listeners: hold the quit until the port is
   // closed so the OS handle is released cleanly.
   event.preventDefault();
   isQuitting = true;
-  cleanupPort().finally(() => app.quit());
+  Promise.allSettled([cleanupPort(), closeRecording()]).finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => {

@@ -64,7 +64,8 @@ export const defaultCaptureConfig = {
   directory: "",
   label: "",
   usePrefix: false,
-  useSubfolder: false
+  useSubfolder: false,
+  recordOnConnect: false
 };
 
 export const defaultAppSettings = {

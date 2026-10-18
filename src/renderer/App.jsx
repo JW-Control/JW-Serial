@@ -21,6 +21,11 @@ import { readJson, readSettings, readString, removeKey, writeJson, writeString }
 import { createFunctionBlock } from "./lib/virtual/definitions.js";
 import Monitor from "./components/Monitor.jsx";
 import ValuePanel from "./components/ValuePanel.jsx";
+import AnalysisView from "./components/AnalysisView.jsx";
+import Toasts from "./components/Toasts.jsx";
+import AlarmsModal from "./components/modals/AlarmsModal.jsx";
+import { alarmThresholds, describeAlarm } from "./engine/alarms.js";
+import { formatReadout } from "./lib/plotOverlay.js";
 import Plot from "./components/Plot.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import VariableMenu from "./components/VariableMenu.jsx";
@@ -36,6 +41,7 @@ import {
 } from "./components/modals/SmallModals.jsx";
 
 const monotonicNow = () => performance.timeOrigin + performance.now();
+const ALARM_NOTICE_COOLDOWN_MS = 30000;
 
 const isMissingIpcHandlerError = (error) => String(error?.message || error || "").includes("No handler registered");
 
@@ -67,6 +73,19 @@ export default function App() {
   });
   const [activeTab, setActiveTab] = useState("plotter");
   const [panelChannels, setPanelChannels] = useState([]);
+  const [alarmRules, setAlarmRules] = useState([]);
+  const [analysisSettings, setAnalysisSettings] = useState({
+    channelId: "val0",
+    seconds: 10,
+    fullScale: "",
+    window: "hann",
+    scale: "db",
+    autoRefresh: true
+  });
+  const [activeAlarmIds, setActiveAlarmIds] = useState([]);
+  const [toasts, setToasts] = useState([]);
+  const [recording, setRecording] = useState(null);
+  const [replayInfo, setReplayInfo] = useState(null);
   const [modal, setModal] = useState(null);
   const [terminator, setTerminator] = useState("none");
   const [ports, setPorts] = useState([]);
@@ -257,6 +276,8 @@ export default function App() {
     terminator,
     activeTab,
     panelChannels,
+    alarmRules,
+    analysisSettings,
     channels: channels.map(({ id, name, color, lineStyle, thickness }) => ({ id, name, color, lineStyle, thickness })),
     virtualFunctions: virtualFunctions.map(({ id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled }) => ({
       id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled
@@ -296,6 +317,12 @@ export default function App() {
     }
     if (Array.isArray(parsed.panelChannels)) {
       setPanelChannels(parsed.panelChannels);
+    }
+    if (Array.isArray(parsed.alarmRules)) {
+      setAlarmRules(parsed.alarmRules);
+    }
+    if (parsed.analysisSettings && typeof parsed.analysisSettings === "object") {
+      setAnalysisSettings((prev) => ({ ...prev, ...parsed.analysisSettings }));
     }
     if (parsed.plots) {
       setPlots(normalizePlots(parsed.plots));
@@ -337,7 +364,7 @@ export default function App() {
     if (restoreReadyRef.current) {
       writeJson(storageKeys.lastSession, buildConfigSnapshot());
     }
-  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, panelChannels, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
+  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, panelChannels, alarmRules, analysisSettings, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
 
   const loadLastSession = () => {
     try {
@@ -518,6 +545,9 @@ export default function App() {
   };
 
   const handleConnect = useEvent(() => {
+    if (replayInfo) {
+      exitReplay();
+    }
     if (captureConfig.usePrefix) {
       setConnectIdentifierPrompt(captureConfig.label || "");
       return;
@@ -575,11 +605,14 @@ export default function App() {
     if (!engine.history.length) {
       return;
     }
+    // Same layout as recordings, so an export can be reopened for review.
     const columns = [
-      { header: "timestamp", read: (sample) => Number(sample.timestamp.toFixed(3)) },
-      { header: "xValue", read: (sample) => sample.xValue },
+      { header: "time_iso", read: (sample) => new Date(sample.timestamp).toISOString() },
+      { header: "timestamp_ms", read: (sample) => Number(sample.timestamp.toFixed(3)) },
+      { header: "seq", read: (sample) => sample.externalSequence },
+      { header: "x", read: (sample) => sample.xValue },
       ...visibleChannels.map((channel) => ({ header: channel.name, read: (sample) => engine.readValue(sample, channel.id) })),
-      ...virtualChannels.map((channel) => ({ header: channel.name, read: (sample) => engine.readValue(sample, channel.id) }))
+      ...virtualChannels.map((channel) => ({ header: `fn:${channel.name}`, read: (sample) => engine.readValue(sample, channel.id) }))
     ];
     const blob = new Blob([buildHistoryCsv(engine.history, columns)], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -589,6 +622,199 @@ export default function App() {
     anchor.click();
     URL.revokeObjectURL(url);
   });
+
+  // ------------------------------------------------------------- toasts
+
+  const pushToast = useEvent((toast) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setToasts((prev) => [...prev.slice(-4), { ...toast, id }]);
+    window.setTimeout(() => setToasts((prev) => prev.filter((item) => item.id !== id)), toast.timeoutMs || 8000);
+  });
+
+  const dismissToast = useCallback((id) => setToasts((prev) => prev.filter((item) => item.id !== id)), []);
+
+  // ------------------------------------------------------------- recording
+
+  const recordingColumns = useMemo(() => [...visibleChannels, ...virtualChannels], [visibleChannels, virtualChannels]);
+  const recordingColumnsKey = recordingColumns.map((channel) => `${channel.id}=${channel.name}`).join("|");
+
+  const startRecording = useEvent(async () => {
+    if (!captureConfig.directory) {
+      pushToast({ title: "No se puede grabar", body: "Elige una carpeta en Configurar capturas.", tone: "alarm" });
+      return;
+    }
+    const header = [
+      "time_iso", "timestamp_ms", "seq", "x",
+      ...visibleChannels.map((channel) => channel.name),
+      ...virtualChannels.map((channel) => `fn:${channel.name}`)
+    ];
+    try {
+      const response = await window.jwSerial.startRecording({
+        directory: captureConfig.directory,
+        label: captureConfig.label,
+        useSubfolder: captureConfig.useSubfolder,
+        header
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error || "error desconocido");
+      }
+      engine.startRecording({
+        columns: recordingColumns.map((channel) => channel.id),
+        write: (text) => window.jwSerial.writeRecording(text)
+      });
+      setRecording({ filePath: response.filePath, startedAt: Date.now(), columnsKey: recordingColumnsKey });
+      engine.appendLog(`SYS > Grabando en ${response.filePath}`);
+      appendSessionEvent("record_start", response.filePath);
+    } catch (error) {
+      pushToast({ title: "No se pudo iniciar la grabación", body: String(error?.message || error), tone: "alarm" });
+    }
+  });
+
+  const stopRecording = useEvent(async () => {
+    if (!recording) {
+      return;
+    }
+    const rows = engine.stopRecording();
+    setRecording(null);
+    try {
+      await window.jwSerial.stopRecording();
+    } catch (_error) {
+      // The main process closes the file on quit as well.
+    }
+    engine.appendLog(`SYS > Grabación guardada: ${recording.filePath} (${rows} filas)`);
+    appendSessionEvent("record_stop", `${recording.filePath} (${rows} filas)`);
+    pushToast({ title: "Grabación guardada", body: `${rows.toLocaleString("es")} filas`, tone: "ok", timeoutMs: 5000 });
+  });
+
+  // A column change (new channel, renamed variable, new function) starts a
+  // new file so every CSV keeps a consistent header.
+  useEffect(() => {
+    if (recording && recording.columnsKey !== recordingColumnsKey) {
+      stopRecording().then(() => startRecording());
+    }
+  }, [recording, recordingColumnsKey, startRecording, stopRecording]);
+
+  const previousConnectionRef = useRef(connectionStatus);
+  useEffect(() => {
+    const previous = previousConnectionRef.current;
+    previousConnectionRef.current = connectionStatus;
+    if (connectionStatus === "connected" && previous !== "connected" && captureConfig.recordOnConnect && !recording) {
+      startRecording();
+    }
+    if (previous === "connected" && connectionStatus !== "connected" && recording) {
+      stopRecording();
+    }
+  }, [connectionStatus, captureConfig.recordOnConnect, recording, startRecording, stopRecording]);
+
+  // ---------------------------------------------------------------- replay
+
+  const openRecording = useEvent(async () => {
+    if (connectionStatus === "connected") {
+      pushToast({ title: "Desconecta el puerto", body: "La revisión de archivos reemplaza los datos en vivo.", tone: "alarm" });
+      return;
+    }
+    try {
+      const response = await window.jwSerial.loadRecording();
+      if (!response?.ok) {
+        if (!response?.canceled) {
+          pushToast({ title: "No se pudo abrir el archivo", body: response?.error, tone: "alarm" });
+        }
+        return;
+      }
+      engine.loadRecording(response, response.fileName);
+      setPlots((prev) => prev.map((plot) => ({ ...plot, xMode: plot.xMode === "manual" ? "manual" : "auto", xWindowOffset: 0 })));
+      setReplayInfo({
+        fileName: response.fileName,
+        rows: response.timestamps.length,
+        totalRows: response.totalRows,
+        decimation: response.decimation
+      });
+      engine.appendLog(`SYS > Revisando ${response.fileName} (${response.totalRows} filas${response.decimation > 1 ? `, 1 de cada ${response.decimation}` : ""})`);
+    } catch (error) {
+      pushToast({ title: "No se pudo abrir el archivo", body: String(error?.message || error), tone: "alarm" });
+    }
+  });
+
+  const exitReplay = useEvent(() => {
+    engine.exitReplay();
+    setReplayInfo(null);
+  });
+
+  // ---------------------------------------------------------------- alarms
+
+  useEffect(() => {
+    engine.setAlarmRules(alarmRules);
+    setActiveAlarmIds(engine.activeAlarmIds);
+  }, [engine, alarmRules]);
+
+  const audioContextRef = useRef(null);
+  const lastAlarmNoticeRef = useRef(new Map());
+
+  const playAlarmSound = () => {
+    try {
+      audioContextRef.current ??= new AudioContext();
+      const audio = audioContextRef.current;
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      oscillator.frequency.value = 880;
+      gain.gain.value = 0.15;
+      oscillator.connect(gain).connect(audio.destination);
+      oscillator.start();
+      oscillator.stop(audio.currentTime + 0.35);
+    } catch (_error) {
+      // Sound is optional.
+    }
+  };
+
+  const handleAlarmEvents = useEvent((events) => {
+    setActiveAlarmIds(engine.activeAlarmIds);
+    events.forEach((event) => {
+      const rule = alarmRules.find((item) => item.id === event.ruleId);
+      if (!rule) {
+        return;
+      }
+      const description = describeAlarm(rule, channelStyles.get(rule.channelId)?.name || rule.channelId);
+      if (event.type === "clear") {
+        engine.appendLog(`ALM > Normalizada: ${description} (valor ${formatReadout(event.value)})`);
+        if (rule.logEvent) {
+          appendSessionEvent("alarm_clear", description);
+        }
+        return;
+      }
+      engine.appendLog(`ALM > ${description} (valor ${formatReadout(event.value)})`);
+      // A signal hovering around the threshold re-triggers often: notify (and
+      // capture) at most once per rule every ALARM_NOTICE_COOLDOWN_MS.
+      const now = Date.now();
+      const lastNotice = lastAlarmNoticeRef.current.get(rule.id) || 0;
+      const inCooldown = now - lastNotice < ALARM_NOTICE_COOLDOWN_MS;
+      if (!inCooldown) {
+        lastAlarmNoticeRef.current.set(rule.id, now);
+      }
+      if (rule.notify && !inCooldown) {
+        pushToast({ title: "Alarma", body: `${description} · valor ${formatReadout(event.value)}`, tone: "alarm", timeoutMs: 15000 });
+        playAlarmSound();
+        try {
+          new Notification("JW-Serial: alarma", { body: `${description} · valor ${formatReadout(event.value)}`, silent: true });
+        } catch (_error) {
+          // System notifications are optional.
+        }
+      }
+      if (rule.logEvent) {
+        appendSessionEvent("alarm", `${description} · valor ${formatReadout(event.value)}`);
+      }
+      if (rule.capture && !inCooldown) {
+        captureAllPlots({ resetTimer: false, automatic: true });
+      }
+    });
+  });
+
+  useEffect(() => engine.onAlarm(handleAlarmEvents), [engine, handleAlarmEvents]);
+
+  const plotThresholds = useMemo(() =>
+    alarmRules
+      .filter((rule) => rule.enabled !== false && rule.showOnPlot !== false)
+      .map((rule) => ({ channelId: rule.channelId, values: alarmThresholds(rule), active: activeAlarmIds.includes(rule.id) })),
+  [alarmRules, activeAlarmIds]);
 
   // -------------------------------------------------------------- captures
 
@@ -903,7 +1129,8 @@ export default function App() {
       e: () => setModal("event"),
       1: () => setActiveTab("plotter"),
       2: () => setActiveTab("monitor"),
-      3: () => setActiveTab("panel")
+      3: () => setActiveTab("panel"),
+      4: () => setActiveTab("analysis")
     };
     const action = actions[event.key.toLowerCase()];
     if (action) {
@@ -964,6 +1191,13 @@ export default function App() {
         nextCaptureAt={nextCaptureAt}
         onCapture={captureAllPlots}
         captureMessage={captureMessage}
+        recording={recording}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+        onOpenRecording={openRecording}
+        isReplay={Boolean(replayInfo)}
+        alarmCount={alarmRules.filter((rule) => rule.enabled !== false).length}
+        activeAlarmCount={activeAlarmIds.length}
       />
 
       <main className="main">
@@ -978,7 +1212,19 @@ export default function App() {
             <button type="button" className={`tab ${activeTab === "panel" ? "tab--active" : ""}`} onClick={() => setActiveTab("panel")} title="Atajo: 3">
               Panel
             </button>
+            <button type="button" className={`tab ${activeTab === "analysis" ? "tab--active" : ""}`} onClick={() => setActiveTab("analysis")} title="Atajo: 4">
+              Análisis
+            </button>
           </div>
+          {replayInfo ? (
+            <div className="replay-banner">
+              <span>
+                Revisando <strong>{replayInfo.fileName}</strong> · {replayInfo.totalRows.toLocaleString("es")} filas
+                {replayInfo.decimation > 1 ? ` (se muestra 1 de cada ${replayInfo.decimation})` : ""}
+              </span>
+              <button type="button" onClick={exitReplay}>Salir de revisión</button>
+            </div>
+          ) : null}
           <div className="plot-actions">
             <button type="button" onClick={() => setPlots((prev) => [...prev, createPlot(prev.length + 1)])}>
               Add Plot
@@ -1010,13 +1256,16 @@ export default function App() {
                 onAssign={assignChannelToAxis}
                 onOpenVariableMenu={openVariableMenu}
                 registerElement={registerPlotElement}
+                thresholds={plotThresholds}
               />
             ))}
           </div>
         ) : activeTab === "monitor" ? (
           <Monitor engine={engine} terminator={terminator} onTerminatorChange={setTerminator} />
-        ) : (
+        ) : activeTab === "panel" ? (
           <ValuePanel engine={engine} channels={allChannels} selectedIds={panelChannels} onSelectionChange={setPanelChannels} />
+        ) : (
+          <AnalysisView engine={engine} channels={allChannels} settings={analysisSettings} onSettingsChange={setAnalysisSettings} theme={theme} />
         )}
       </main>
 
@@ -1071,6 +1320,17 @@ export default function App() {
           onClose={closeModal}
         />
       ) : null}
+
+      {modal === "alarms" ? (
+        <AlarmsModal
+          rules={alarmRules}
+          channels={allChannels}
+          activeIds={activeAlarmIds}
+          onChange={setAlarmRules}
+          onClose={closeModal}
+        />
+      ) : null}
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
 
       {startupRestorePrompt ? <StartupRestorePrompt onLoad={loadLastSession} onFresh={startEmptySession} /> : null}
       {connectIdentifierPrompt !== null ? (

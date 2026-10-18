@@ -87,7 +87,7 @@ const rangeOf = (stats) => (Number.isFinite(stats.min) ? normalizeYAxisRange(sta
  * @param options.theme          "light" | "dark"
  * @param options.memory         per-plot mutable object (Y2 follow state, stat caches)
  */
-export const computePlotFrame = ({ engine, plot, width, height, styles, includeTimestamp, plotMode, theme, memory }) => {
+export const computePlotFrame = ({ engine, plot, width, height, styles, includeTimestamp, plotMode, theme, memory, thresholds = [] }) => {
   const padding = PLOT_PADDING;
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
@@ -250,6 +250,29 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
   }
   pruneRollingStats(memory);
 
+  // Alarm thresholds of the visible series, as horizontal lines.
+  const thresholdLines = [];
+  if (hasData) {
+    for (const assignment of yAssignments) {
+      const ticks = assignment.axis === "y2" ? y2Ticks : y1Ticks;
+      for (const threshold of thresholds) {
+        if (threshold.channelId !== assignment.channelId) {
+          continue;
+        }
+        for (const value of threshold.values) {
+          if (value < ticks.min || value > ticks.max) {
+            continue;
+          }
+          thresholdLines.push({
+            py: padding.top + plotHeight - ((value - ticks.min) / (ticks.max - ticks.min || 1)) * plotHeight,
+            value,
+            active: threshold.active
+          });
+        }
+      }
+    }
+  }
+
   return {
     series,
     statSeries,
@@ -259,6 +282,7 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
     theme: colors,
     hasData,
     hasAssignments,
+    thresholdLines,
     autoRanges: { x: xAutoRange, y1: y1Own, y2: y2Own },
     // Data needed by cursors, tooltips and measurements (see plotOverlay.js).
     view,

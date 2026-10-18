@@ -26,6 +26,10 @@ La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG a
 - Doble clic en el gráfico para autoajustar Y a lo visible; clic en la leyenda para ocultar o mostrar una señal; doble clic en el título para renombrar el plot.
 - Estilo de línea "Puntos" para gráficos de dispersión XY.
 - Vista **Panel** con valores grandes y mínimo/máximo de las variables elegidas.
+- **Grabación continua** de todas las muestras a CSV (opcionalmente al conectar), con un archivo nuevo si cambian las columnas.
+- **Modo revisión**: abre una grabación o un CSV exportado y analízalo con zoom, cursores, funciones y capturas.
+- **Alarmas** por umbral (mayor, menor, dentro o fuera de rango, con duración mínima): aviso con sonido, evento en `session_log.csv`, captura automática y línea de umbral en los plots.
+- Vista **Análisis**: ruido RMS y pico a pico, bits efectivos y bits sin ruido del ADC, espectro FFT (ventana Hann) e histograma con la gaussiana teórica.
 - Escalas canónicas para ejes y grillas legibles.
 - Autoescalado Y1/Y2 sobre el tramo visible cuando X está en modo manual.
 - Escala Y2 alineada visualmente con Y1 para evitar grillas superpuestas confusas.
@@ -170,7 +174,7 @@ Incluye:
 | Espacio | Pausar / reanudar |
 | C | Capturar plots |
 | E | Registrar evento |
-| 1 / 2 / 3 | Plotter / Monitor / Panel |
+| 1 / 2 / 3 / 4 | Plotter / Monitor / Panel / Análisis |
 | Esc | Cerrar menús |
 
 Los atajos no se activan mientras escribes en un campo ni con un modal abierto.
@@ -275,6 +279,33 @@ Donde:
 - `AAMMDD`: fecha.
 - `HHMMSS`: hora.
 - `NN`: contador para evitar sobrescrituras si hay más de una captura en el mismo segundo.
+
+## Grabación y Revisión
+
+**Grabar datos** escribe cada muestra en un CSV dentro de la carpeta de capturas (y en la subcarpeta del lote si está activa):
+
+```text
+PCB_0116_Datos_260510-120203.csv
+time_iso,timestamp_ms,seq,x,uV,mA,fn:Rango uV
+2026-05-10T17:02:03.512Z,1778432523512.000,41,,1409.96,2.31,0.012
+```
+
+Las columnas `fn:` son funciones virtuales. Si agregas un canal, renombras una variable o creas una función mientras grabas, la grabación continúa en un archivo nuevo para que cada CSV tenga un encabezado coherente. En **Capturas** puedes activar **Grabar datos al conectar**.
+
+**Abrir grabación** carga un CSV grabado (o exportado con el botón CSV) en modo revisión: los plots muestran el archivo completo y puedes usar zoom, cursores, curvas de referencia, funciones virtuales (se recalculan) y capturas. Los archivos de más de un millón de filas se cargan diezmados y la barra superior lo indica.
+
+## Alarmas
+
+Desde **Alarmas** defines reglas sobre cualquier señal o función: mayor que, menor que, dentro o fuera de un rango, opcionalmente sostenidas durante N segundos. Se evalúan en cada muestra. Al dispararse pueden mostrar un aviso con sonido (como máximo uno cada 30 s por regla), registrar el evento en `session_log.csv` y capturar los plots; al normalizarse queda registrado en el monitor. Los umbrales se dibujan como líneas punteadas en los plots donde está la señal.
+
+## Análisis de Ruido
+
+La vista **Análisis** toma los últimos N segundos de una señal y muestra:
+
+- Ruido RMS (desviación estándar) y pico a pico, y su relación (≈6.6 para ruido gaussiano).
+- Con la **escala completa** del ADC (en las mismas unidades): bits efectivos = log2(FSR / RMS) y bits sin ruido = log2(FSR / p-p), las cifras que usan las hojas de datos de convertidores como el AD7124.
+- Espectro de amplitud (FFT de hasta 65 536 puntos, ventana Hann, en dB o lineal) con el pico dominante.
+- Histograma con la curva gaussiana esperada superpuesta.
 
 ## Registro de Sesión
 

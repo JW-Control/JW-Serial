@@ -59,7 +59,8 @@ const Plot = ({
   onDropPrompt,
   onAssign,
   onOpenVariableMenu,
-  registerElement
+  registerElement,
+  thresholds
 }) => {
   const sectionRef = useRef(null);
   const [width, setWidth] = useState(1200);
@@ -76,8 +77,8 @@ const Plot = ({
   // Stable while nothing relevant changes, so hover/measurement re-renders do
   // not force a full frame recomputation.
   const inputs = useMemo(
-    () => ({ plot, width: canvasWidth, height: canvasHeight, styles, includeTimestamp, plotMode, theme }),
-    [plot, canvasWidth, canvasHeight, styles, includeTimestamp, plotMode, theme]
+    () => ({ plot, width: canvasWidth, height: canvasHeight, styles, includeTimestamp, plotMode, theme, thresholds }),
+    [plot, canvasWidth, canvasHeight, styles, includeTimestamp, plotMode, theme, thresholds]
   );
   const inputsRef = useRef(inputs);
   inputsRef.current = inputs;

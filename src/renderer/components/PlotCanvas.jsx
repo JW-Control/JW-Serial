@@ -223,7 +223,7 @@ const PlotCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) =>
     };
 
     const paint = (frame, now) => {
-      const { series, statSeries, xTicks, y1Ticks, y2Ticks, theme, hasAssignments, overlay } = frame;
+      const { series, statSeries, xTicks, y1Ticks, y2Ticks, theme, hasAssignments, overlay, thresholdLines = [] } = frame;
       const plotRight = width - padding.right;
       const plotBottom = height - padding.bottom;
       const plotWidth = plotRight - padding.left;
@@ -313,6 +313,22 @@ const PlotCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) =>
         context.lineWidth = thickness;
         context.setLineDash(dashFor(style));
         strokePoints(points);
+      });
+      thresholdLines.forEach(({ py, value, active }) => {
+        context.strokeStyle = "#dc2626";
+        context.lineWidth = active ? 2 : 1.25;
+        context.globalAlpha = active ? 1 : 0.8;
+        context.setLineDash([6, 4]);
+        context.beginPath();
+        context.moveTo(padding.left, py);
+        context.lineTo(plotRight, py);
+        context.stroke();
+        context.setLineDash([]);
+        context.fillStyle = "#dc2626";
+        context.font = "11px system-ui, sans-serif";
+        context.textAlign = "right";
+        context.textBaseline = "bottom";
+        context.fillText(formatReadout(value), plotRight - 4, py - 2);
       });
       context.restore();
       paintOverlay(overlay, theme, plotBottom);

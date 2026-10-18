@@ -38,6 +38,7 @@ export const CapturesModal = ({ onClose, captureConfig, onUpdate, onChooseDirect
       </label>
       <StateToggle label="Usar como prefijo" enabled={captureConfig.usePrefix} onToggle={() => onUpdate({ usePrefix: !captureConfig.usePrefix })} />
       <StateToggle label="Guardar en subcarpeta" enabled={captureConfig.useSubfolder} onToggle={() => onUpdate({ useSubfolder: !captureConfig.useSubfolder })} />
+      <StateToggle label="Grabar datos al conectar" enabled={Boolean(captureConfig.recordOnConnect)} onToggle={() => onUpdate({ recordOnConnect: !captureConfig.recordOnConnect })} />
       <div className="modal__actions modal__actions--spaced">
         <button type="button" onClick={onChooseDirectory}>Elegir carpeta</button>
         <button type="button" onClick={onOpenDirectory}>Abrir carpeta</button>
