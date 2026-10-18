@@ -13,7 +13,9 @@ const virtualOperations = [
   { id: "delta", label: "Delta", needsWindow: true, formula: (name, windowText) => `delta([${name}], ${windowText})` },
   { id: "slope", label: "Pend", needsWindow: true, formula: (name, windowText) => `pend([${name}], ${windowText})` },
   { id: "std", label: "Std", needsWindow: true, formula: (name, windowText) => `std([${name}], ${windowText})` },
-  { id: "rms", label: "RMS", needsWindow: true, formula: (name, windowText) => `rms([${name}], ${windowText})` }
+  { id: "rms", label: "RMS", needsWindow: true, formula: (name, windowText) => `rms([${name}], ${windowText})` },
+  { id: "errorPercen", label: "Error%", needsWindow: true, formula: (name, windowText) => `errorPercen([${name}], ${windowText})` },
+  { id: "errorRela", label: "Error_Rela", needsWindow: true, formula: (name, windowText) => `errorRela([${name}], ${windowText})` }
 ];
 
 const functionBlockOperations = [
@@ -38,7 +40,9 @@ const functionBlockOperations = [
   { id: "gt", label: ">", kind: "binary", symbol: ">" },
   { id: "lt", label: "<", kind: "binary", symbol: "<" },
   { id: "gte", label: ">=", kind: "binary", symbol: ">=" },
-  { id: "lte", label: "<=", kind: "binary", symbol: "<=" }
+  { id: "lte", label: "<=", kind: "binary", symbol: "<=" },
+  { id: "errorPercen", label: "Error%", kind: "window", needsWindow: true },
+  { id: "errorRela", label: "Error_Rela", kind: "window", needsWindow: true }
 ];
 
 const binaryBlockSymbols = {
@@ -60,6 +64,8 @@ const binaryExpressionFunctions = {
   lte: "lte"
 };
 
+const virtualFunctionEvaluatorCache = new Map();
+
 const unaryExpressionFunctions = {
   abs: "abs",
   sqrt: "sqrt",
@@ -75,7 +81,9 @@ const windowExpressionFunctions = {
   delta: "delta",
   slope: "pend",
   std: "std",
-  rms: "rms"
+  rms: "rms",
+  errorPercen: "errorPercen",
+  errorRela: "errorRela"
 };
 
 const createDefaultChannels = (count) =>
@@ -189,6 +197,19 @@ const commonBaudRates = [
   1500000, 2000000
 ];
 
+const esp32Ch340HighSpeedProfile = {
+  baudRate: 921600,
+  channelCount: 2,
+  samplesPerSecond: 2000,
+  periodMs: 0.5,
+  bufferSeconds: 60,
+  refreshMs: 50,
+  plotMode: "minmax",
+  xWindowSize: 10,
+  includeSequenceCounter: true,
+  serialTimeoutSeconds: 3
+};
+
 const normalizeChannels = (count, previous) => {
   const safeCount = Math.max(1, count);
   const base = createDefaultChannels(safeCount);
@@ -200,12 +221,31 @@ const normalizeChannels = (count, previous) => {
 
 const channelIndex = (channelId) => Number(channelId.replace("val", ""));
 const isPhysicalChannelId = (channelId) => /^val\d+$/.test(channelId || "");
+const isSystemChannelId = (channelId) => /^sys[A-Z]/.test(channelId || "");
 
-const dashByStyle = {
-  solid: "",
-  dashed: "8 4",
-  dotted: "2 4"
-};
+const normalizeFrameFieldName = (name) =>
+  String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const isSequenceFieldName = (name) =>
+  ["seq", "sequence", "sample", "sampleid", "frame", "frameid", "counter", "count", "n"].includes(normalizeFrameFieldName(name));
+
+const isTimestampFieldName = (name) =>
+  ["t", "ts", "time", "timestamp", "millis", "ms"].includes(normalizeFrameFieldName(name));
+
+const createEmptyRxStats = () => ({
+  frames: 0,
+  sps: 0,
+  avgMs: 0,
+  jitterMs: 0,
+  lastFrameMs: null,
+  seqLost: 0,
+  seqGaps: 0,
+  seqResets: 0,
+  seqLast: null
+});
 
 const axisLabels = {
   x: "X",
@@ -219,16 +259,18 @@ const buildPath = (points) =>
     .join(" ");
 
 const minStep = 0.05;
+const minYAxisStep = 0.00001;
 
-const pickStep = (range, targetTicks = 6) => {
+const pickStep = (range, targetTicks = 6, minimumStep = minStep, multipliers = [5, 10]) => {
   if (range <= 0 || Number.isNaN(range)) {
-    return minStep;
+    return minimumStep;
   }
 
-  const target = Math.max(minStep, range / targetTicks);
+  const target = Math.max(minimumStep, range / targetTicks);
   const exponent = Math.floor(Math.log10(target));
   const base = 10 ** exponent;
-  const candidates = [5 * base, 10 * base].filter((step) => step >= minStep);
+  const candidates = multipliers.map((multiplier) => multiplier * base)
+    .filter((step) => step >= minimumStep);
 
   for (const candidate of candidates) {
     if (candidate >= target) {
@@ -236,8 +278,11 @@ const pickStep = (range, targetTicks = 6) => {
     }
   }
 
-  return Math.max(minStep, 5 * 10 ** (exponent + 1));
+  return Math.max(minimumStep, multipliers[0] * 10 ** (exponent + 1));
 };
+
+const pickYAxisStep = (range, targetTicks = 6) =>
+  pickStep(range, targetTicks, minYAxisStep, [1, 2, 2.5, 5, 10]);
 
 const getStepDivisionBase = (step) => {
   if (!Number.isFinite(step) || step <= 0) {
@@ -249,11 +294,11 @@ const getStepDivisionBase = (step) => {
   return Math.abs(normalized - 5) < 1e-9 ? 5 : 10;
 };
 
-const makeTicks = (minValue, maxValue, targetTicks = 6) => {
+const makeTicks = (minValue, maxValue, targetTicks = 6, stepPicker = pickStep) => {
   const min = Number.isFinite(minValue) ? minValue : 0;
   const max = Number.isFinite(maxValue) ? maxValue : min + 1;
   const safeMax = max === min ? min + 1 : max;
-  const step = pickStep(safeMax - min, targetTicks);
+  const step = stepPicker(safeMax - min, targetTicks);
   const start = Math.floor(min / step) * step;
   const ticks = [];
 
@@ -317,12 +362,12 @@ const makeYAxisTicks = (minValue, maxValue, pixelHeight) => {
   const targetTicks = clamp(Math.floor(pixelHeight / 28), 5, 16);
 
   if (targetTicks <= 2) {
-    const step = pickStep(span, 2);
+    const step = pickYAxisStep(span, 2);
     const centered = Number((Math.round(((minValue + maxValue) * 0.5) / step) * step).toFixed(6));
     return { ticks: [centered], min: minValue, max: maxValue, step };
   }
 
-  return makeTicks(minValue, maxValue, targetTicks);
+  return makeTicks(minValue, maxValue, targetTicks, pickYAxisStep);
 };
 
 const makeTicksFromStepRange = (minValue, maxValue, step) => {
@@ -467,12 +512,12 @@ const normalizeYAxisRange = (minValue, maxValue) => {
   }
 
   if (minValue === maxValue) {
-    const pad = Math.max(Math.abs(minValue) * 0.05, 0.1);
+    const pad = Math.max(Math.abs(minValue) * 0.05, minYAxisStep * 2);
     return { min: minValue - pad, max: maxValue + pad };
   }
 
   const span = maxValue - minValue;
-  const pad = Math.max(span * 0.06, 0.05);
+  const pad = Math.max(span * 0.06, minYAxisStep * 2);
   return { min: minValue - pad, max: maxValue + pad };
 };
 
@@ -495,7 +540,10 @@ const formatTick = (value, step) => {
   if (step >= 0.1) {
     return rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
   }
-  return rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  if (step >= 0.001) {
+    return rounded.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return rounded.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 };
 
 const downsamplePointsByPixel = (points) => {
@@ -537,7 +585,7 @@ const downsamplePointsByPixel = (points) => {
   return reduced.length >= 2 ? reduced : points;
 };
 
-const buildSeries = (
+const buildSeriesPoints = (
   samples,
   xValues,
   channelId,
@@ -548,36 +596,330 @@ const buildSeries = (
   width,
   padding,
   minX,
-  maxX
+  maxX,
+  plotMode = "normal"
 ) => {
   if (samples.length <= 1) {
-    return "";
+    return [];
   }
 
   const spreadX = maxX - minX || 1;
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
 
-  const points = samples.map((sample, sampleIndex) => {
+  const toPoint = (sample, sampleIndex) => {
+    const xValue = xValues[sampleIndex];
     const value = getSampleValue(sample, channelId);
-    if (!Number.isFinite(value)) {
+    if (!Number.isFinite(value) || !Number.isFinite(xValue) || xValue < minX || xValue > maxX) {
       return null;
     }
-    const normalizedX = (xValues[sampleIndex] - minX) / spreadX;
+    const normalizedX = (xValue - minX) / spreadX;
     const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
     return {
-      x: padding.left + normalizedX * (width - padding.left - padding.right),
-      y:
-        height -
-        padding.bottom -
-        normalizedY * (height - padding.top - padding.bottom)
+      x: padding.left + normalizedX * plotWidth,
+      y: height - padding.bottom - normalizedY * plotHeight
     };
+  };
+
+  if (plotMode === "minmax") {
+    const bucketCount = Math.max(1, Math.ceil(plotWidth) + 1);
+    const bucketMinY = new Float32Array(bucketCount);
+    const bucketMaxY = new Float32Array(bucketCount);
+    bucketMinY.fill(Number.POSITIVE_INFINITY);
+    bucketMaxY.fill(Number.NEGATIVE_INFINITY);
+    samples.forEach((sample, sampleIndex) => {
+      const xValue = xValues[sampleIndex];
+      const value = getSampleValue(sample, channelId);
+      if (!Number.isFinite(value) || !Number.isFinite(xValue) || xValue < minX || xValue > maxX) {
+        return;
+      }
+      const key = clamp(Math.floor(((xValue - minX) / spreadX) * plotWidth), 0, bucketCount - 1);
+      const normalizedY = clamp((value - minY) / (maxY - minY || 1), 0, 1);
+      const y = height - padding.bottom - normalizedY * plotHeight;
+      bucketMinY[key] = Math.min(bucketMinY[key], y);
+      bucketMaxY[key] = Math.max(bucketMaxY[key], y);
+    });
+
+    const coordinates = new Float32Array(bucketCount * 4);
+    let coordinateIndex = 0;
+    for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+      if (!Number.isFinite(bucketMinY[bucketIndex])) {
+        continue;
+      }
+      const x = padding.left + bucketIndex + 0.5;
+      coordinates[coordinateIndex++] = x;
+      coordinates[coordinateIndex++] = bucketMinY[bucketIndex];
+      coordinates[coordinateIndex++] = x;
+      coordinates[coordinateIndex++] = bucketMaxY[bucketIndex];
+    }
+    return coordinateIndex >= 4 ? coordinates.subarray(0, coordinateIndex) : [];
+  }
+
+  const points = samples.map((sample, sampleIndex) => {
+    return toPoint(sample, sampleIndex);
   }).filter(Boolean);
 
   if (points.length < 2) {
-    return "";
+    return [];
   }
 
   const reducedPoints = downsamplePointsByPixel(points);
-  return buildPath(reducedPoints);
+  const coordinates = new Float32Array(reducedPoints.length * 2);
+  reducedPoints.forEach((point, index) => {
+    coordinates[index * 2] = point.x;
+    coordinates[index * 2 + 1] = point.y;
+  });
+  return coordinates;
+};
+
+const PlotSeriesCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) => {
+  const canvasRef = useRef(null);
+  const labelsRef = useRef(null);
+  const labelPoolsRef = useRef({ x: [], y1: [], y2: [] });
+  const labelGroupsRef = useRef({});
+  const axisLabelStateRef = useRef({ xLayout: null, lastYUpdateAt: 0 });
+  const getFrameRef = useRef(getFrame);
+  const onPaintRef = useRef(onPaint);
+
+  getFrameRef.current = getFrame;
+  onPaintRef.current = onPaint;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const backingWidth = Math.max(1, Math.round(width * pixelRatio));
+    const verticalCssPixels = Math.min(height, 420);
+    // Never upscale the canvas vertically: it makes axis text blurry and also
+    // quantizes plot coordinates. Keep at least 1 backing pixel per CSS pixel,
+    // while retaining extra device-pixel density only within the performance cap.
+    const backingHeight = Math.max(
+      1,
+      Math.round(height),
+      Math.round(verticalCssPixels * pixelRatio)
+    );
+    if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+      canvas.width = backingWidth;
+      canvas.height = backingHeight;
+    }
+    const context = canvas.getContext("2d");
+    const frameInterval = clamp(Number(refreshMs) || 16, 16, 1000);
+    let animationFrame = 0;
+    let lastDrawAt = 0;
+
+    const draw = (now) => {
+      animationFrame = window.requestAnimationFrame(draw);
+      if (now - lastDrawAt < frameInterval) {
+        return;
+      }
+      lastDrawAt = now - ((now - lastDrawAt) % frameInterval);
+
+      context.setTransform(
+        backingWidth / width,
+        0,
+        0,
+        backingHeight / height,
+        0,
+        0
+      );
+      context.clearRect(0, 0, width, height);
+
+      const frame = getFrameRef.current?.();
+      if (!frame) {
+        return;
+      }
+      const { series, xTicks, y1Ticks, y2Ticks, theme } = frame;
+      const plotRight = width - padding.right;
+      const plotBottom = height - padding.bottom;
+      const plotWidth = plotRight - padding.left;
+      const plotHeight = plotBottom - padding.top;
+      const xToPx = (value) => padding.left
+        + ((value - xTicks.min) / (xTicks.max - xTicks.min || 1)) * plotWidth;
+      const yToPx = (value, ticks) => plotBottom
+        - ((value - ticks.min) / (ticks.max - ticks.min || 1)) * plotHeight;
+      const visibleTicks = (ticks) => ticks.ticks.filter(
+        (tick, index, values) => index === 0
+          || formatTick(tick, ticks.step) !== formatTick(values[index - 1], ticks.step)
+      );
+      const strokeLine = (x1, y1, x2, y2, color, lineWidth = 1) => {
+        context.beginPath();
+        context.moveTo(x1, y1);
+        context.lineTo(x2, y2);
+        context.strokeStyle = color;
+        context.lineWidth = lineWidth;
+        context.setLineDash([]);
+        context.globalAlpha = 1;
+        context.stroke();
+      };
+      const updateLabels = (key, ticks, getPosition, textAnchor) => {
+        const labels = visibleTicks(ticks);
+        const pool = labelPoolsRef.current[key];
+        const svg = labelsRef.current;
+        if (!svg) {
+          return;
+        }
+        let group = labelGroupsRef.current[key];
+        if (!group) {
+          group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          svg.appendChild(group);
+          labelGroupsRef.current[key] = group;
+        }
+        labels.forEach((tick, index) => {
+          let node = pool[index];
+          if (!node) {
+            node = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            node.setAttribute("font-size", "12");
+            node.setAttribute("font-family", "system-ui, sans-serif");
+            node.setAttribute("dominant-baseline", "middle");
+            group.appendChild(node);
+            pool.push(node);
+          }
+          const position = getPosition(tick);
+          const label = formatTick(tick, ticks.step);
+          if (node.__jwX !== position.x) {
+            node.setAttribute("x", String(position.x));
+            node.__jwX = position.x;
+          }
+          if (node.__jwY !== position.y) {
+            node.setAttribute("y", String(position.y));
+            node.__jwY = position.y;
+          }
+          if (node.__jwAnchor !== textAnchor) {
+            node.setAttribute("text-anchor", textAnchor);
+            node.__jwAnchor = textAnchor;
+          }
+          if (node.__jwFill !== theme.tick) {
+            node.setAttribute("fill", theme.tick);
+            node.__jwFill = theme.tick;
+          }
+          if (node.__jwLabel !== label) {
+            node.textContent = label;
+            node.__jwLabel = label;
+          }
+          node.style.display = "";
+        });
+        for (let index = labels.length; index < pool.length; index += 1) {
+          pool[index].style.display = "none";
+        }
+        return labels;
+      };
+
+      makeMinorTicks(xTicks, getStepDivisionBase(xTicks.step)).forEach((tick) => {
+        const x = xToPx(tick);
+        strokeLine(x, padding.top, x, plotBottom, theme.gridMinor);
+      });
+      makeMinorTicks(y1Ticks, getStepDivisionBase(y1Ticks.step)).forEach((tick) => {
+        const y = yToPx(tick, y1Ticks);
+        strokeLine(padding.left, y, plotRight, y, theme.gridMinorY);
+      });
+      visibleTicks(xTicks).forEach((tick) => {
+        const x = xToPx(tick);
+        strokeLine(x, padding.top, x, plotBottom, theme.gridMajor, 1.15);
+      });
+      visibleTicks(y1Ticks).forEach((tick) => {
+        const y = yToPx(tick, y1Ticks);
+        strokeLine(padding.left, y, plotRight, y, theme.gridYMajor, 1.15);
+      });
+      strokeLine(padding.left, plotBottom, plotRight, plotBottom, theme.axis);
+      strokeLine(padding.left, padding.top, padding.left, plotBottom, theme.axis);
+      strokeLine(plotRight, padding.top, plotRight, plotBottom, theme.axis);
+
+      const labelState = axisLabelStateRef.current;
+      const currentXLabels = visibleTicks(xTicks);
+      const xSignature = currentXLabels.map((tick) => formatTick(tick, xTicks.step)).join("|");
+      const xSpan = xTicks.max - xTicks.min || 1;
+      const previousXLayout = labelState.xLayout;
+      const spanChange = previousXLayout
+        ? Math.abs(xSpan - previousXLayout.span) / Math.max(Math.abs(previousXLayout.span), 1e-9)
+        : Number.POSITIVE_INFINITY;
+      const shouldLayoutX = !previousXLayout
+        || now - previousXLayout.updatedAt >= 100
+        || previousXLayout.signature !== xSignature
+        || spanChange > 0.02;
+      if (shouldLayoutX) {
+        updateLabels("x", xTicks, (tick) => ({ x: xToPx(tick), y: plotBottom + 28 }), "middle");
+        const xGroup = labelGroupsRef.current.x;
+        xGroup?.removeAttribute("transform");
+        if (xGroup) {
+          delete xGroup.__jwTranslateX;
+        }
+        labelState.xLayout = {
+          min: xTicks.min,
+          span: xSpan,
+          signature: xSignature,
+          updatedAt: now
+        };
+      } else {
+        const translateX = ((previousXLayout.min - xTicks.min) / xSpan) * plotWidth;
+        const xGroup = labelGroupsRef.current.x;
+        if (xGroup && xGroup.__jwTranslateX !== translateX) {
+          xGroup.setAttribute("transform", `translate(${translateX} 0)`);
+          xGroup.__jwTranslateX = translateX;
+        }
+      }
+
+      if (now - labelState.lastYUpdateAt >= 100) {
+        updateLabels("y1", y1Ticks, (tick) => ({ x: padding.left - 14, y: yToPx(tick, y1Ticks) }), "end");
+        updateLabels("y2", y2Ticks, (tick) => ({ x: plotRight + 14, y: yToPx(tick, y2Ticks) }), "start");
+        labelState.lastYUpdateAt = now;
+      }
+
+      context.save();
+      context.beginPath();
+      context.rect(padding.left, padding.top, plotWidth, plotHeight);
+      context.clip();
+      series.forEach(({ points, color, thickness, style }) => {
+        if (points.length < 4) {
+          return;
+        }
+        context.beginPath();
+        context.moveTo(points[0], points[1]);
+        for (let index = 2; index < points.length; index += 2) {
+          context.lineTo(points[index], points[index + 1]);
+        }
+        context.strokeStyle = color;
+        context.lineWidth = thickness;
+        context.globalAlpha = 0.95;
+        context.setLineDash(style === "dashed" ? [8, 4] : style === "dotted" ? [2, 4] : []);
+        context.stroke();
+      });
+      context.restore();
+      onPaintRef.current?.();
+    };
+
+    animationFrame = window.requestAnimationFrame(draw);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    height,
+    padding.bottom,
+    padding.left,
+    padding.right,
+    padding.top,
+    refreshMs,
+    width
+  ]);
+
+  return (
+    <>
+    <canvas
+      ref={canvasRef}
+      className="plot__series-canvas"
+      style={{ height: `${height}px` }}
+      aria-hidden="true"
+    />
+    <svg
+      ref={labelsRef}
+      className="plot__axis-labels"
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMinYMin meet"
+      aria-hidden="true"
+    />
+    </>
+  );
 };
 
 const basePlotTicks = {
@@ -587,6 +929,158 @@ const basePlotTicks = {
 };
 
 const templateStorageKey = "jwSerialTemplates";
+
+const createCircularHistory = (initialCapacity = 1) => {
+  const state = {
+    storage: new Array(Math.max(1, initialCapacity)),
+    capacity: Math.max(1, initialCapacity),
+    start: 0,
+    size: 0,
+    setCapacity(nextCapacity) {
+      const capacity = Math.max(1, Math.floor(nextCapacity || 1));
+      if (capacity === this.capacity) {
+        return;
+      }
+      const nextStorage = new Array(capacity);
+      const keep = Math.min(this.size, capacity);
+      const offset = this.size - keep;
+      for (let index = 0; index < keep; index += 1) {
+        nextStorage[index] = this.at(offset + index);
+      }
+      this.storage = nextStorage;
+      this.capacity = capacity;
+      this.start = 0;
+      this.size = keep;
+    },
+    push(value, capacity = this.capacity) {
+      this.setCapacity(capacity);
+      if (this.size < this.capacity) {
+        this.storage[(this.start + this.size) % this.capacity] = value;
+        this.size += 1;
+        return;
+      }
+      this.storage[this.start] = value;
+      this.start = (this.start + 1) % this.capacity;
+    },
+    at(index) {
+      const normalized = index < 0 ? this.size + index : index;
+      if (normalized < 0 || normalized >= this.size) {
+        return undefined;
+      }
+      return this.storage[(this.start + normalized) % this.capacity];
+    },
+    slice(start = 0, end = this.size) {
+      const from = Math.max(0, start < 0 ? this.size + start : start);
+      const to = Math.min(this.size, end < 0 ? this.size + end : end);
+      const result = new Array(Math.max(0, to - from));
+      for (let index = from; index < to; index += 1) {
+        result[index - from] = this.at(index);
+      }
+      return result;
+    },
+    map(callback) {
+      const result = new Array(this.size);
+      for (let index = 0; index < this.size; index += 1) {
+        result[index] = callback(this.at(index), index, proxy);
+      }
+      return result;
+    },
+    forEach(callback) {
+      for (let index = 0; index < this.size; index += 1) {
+        callback(this.at(index), index, proxy);
+      }
+    },
+    filter(callback) {
+      const result = [];
+      for (let index = 0; index < this.size; index += 1) {
+        const value = this.at(index);
+        if (callback(value, index, proxy)) {
+          result.push(value);
+        }
+      }
+      return result;
+    },
+    replace(values) {
+      const keep = Math.min(values.length, this.capacity);
+      this.start = 0;
+      this.size = keep;
+      for (let index = 0; index < keep; index += 1) {
+        this.storage[index] = values[values.length - keep + index];
+      }
+    },
+    clear() {
+      this.storage.fill(undefined);
+      this.start = 0;
+      this.size = 0;
+    }
+  };
+  const proxy = new Proxy(state, {
+    get(target, property, receiver) {
+      if (property === "length") {
+        return target.size;
+      }
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        return target.at(Number(property));
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  return proxy;
+};
+
+const createHistoryView = (history, start, end) => {
+  const from = Math.max(0, Math.min(history.length, start));
+  const to = Math.max(from, Math.min(history.length, end));
+  const view = {
+    length: to - from,
+    at(index) {
+      const normalized = index < 0 ? this.length + index : index;
+      return normalized >= 0 && normalized < this.length
+        ? history.at(from + normalized)
+        : undefined;
+    },
+    slice(sliceStart = 0, sliceEnd = this.length) {
+      const normalizedStart = Math.max(0, sliceStart < 0 ? this.length + sliceStart : sliceStart);
+      const normalizedEnd = Math.min(this.length, sliceEnd < 0 ? this.length + sliceEnd : sliceEnd);
+      const result = new Array(Math.max(0, normalizedEnd - normalizedStart));
+      for (let index = normalizedStart; index < normalizedEnd; index += 1) {
+        result[index - normalizedStart] = this.at(index);
+      }
+      return result;
+    },
+    map(callback) {
+      const result = new Array(this.length);
+      for (let index = 0; index < this.length; index += 1) {
+        result[index] = callback(this.at(index), index, proxy);
+      }
+      return result;
+    },
+    forEach(callback) {
+      for (let index = 0; index < this.length; index += 1) {
+        callback(this.at(index), index, proxy);
+      }
+    },
+    filter(callback) {
+      const result = [];
+      for (let index = 0; index < this.length; index += 1) {
+        const value = this.at(index);
+        if (callback(value, index, proxy)) {
+          result.push(value);
+        }
+      }
+      return result;
+    }
+  };
+  const proxy = new Proxy(view, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        return target.at(Number(property));
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  return proxy;
+};
 
 const readTemplateStore = () => {
   try {
@@ -636,7 +1130,8 @@ export default function App() {
   const [templateMessage, setTemplateMessage] = useState("");
   const [templateConfirm, setTemplateConfirm] = useState(null);
   const [eventText, setEventText] = useState("");
-  const [rxStats, setRxStats] = useState({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
+  const [rxStats, setRxStats] = useState(() => createEmptyRxStats());
+  const [plotFps, setPlotFps] = useState(0);
   const [dataVersion, setDataVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [plotResize, setPlotResize] = useState(null);
@@ -666,22 +1161,38 @@ export default function App() {
   const plotResizeObservers = useRef(new Map());
   const captureInProgressRef = useRef(false);
   const y2FollowStateRef = useRef(new Map());
-  const historyRef = useRef([]);
+  const historyRef = useRef(createCircularHistory());
+  const lodBlocksRef = useRef({ levels: [], current: null });
   const virtualFunctionsRef = useRef([]);
-  const rxTimesRef = useRef([]);
+  const rxStatsWindowRef = useRef({ times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 });
+  const sequenceStatsRef = useRef({ last: null, lost: 0, gaps: 0, resets: 0 });
+  const totalFramesRef = useRef(0);
+  const latestRxStatsRef = useRef(rxStats);
+  const latestPlotFpsRef = useRef(plotFps);
+  const latestChannelsRef = useRef(channels);
+  const latestVirtualValuesRef = useRef({});
+  const rawLogQueueRef = useRef([]);
+  const uiFlushTimerRef = useRef(null);
+  const lastUiFlushAtRef = useRef(0);
+  const plotPaintCountRef = useRef(0);
+  const pendingDataRefreshRef = useRef(false);
+  const pendingChannelRefreshRef = useRef(false);
+  const pendingVirtualRefreshRef = useRef(false);
   const lastValidFrameAtRef = useRef(null);
   const restoreReadyRef = useRef(false);
 
   const [basicConfig, setBasicConfig] = useState({
     channelCount: 0,
-    samplesPerSecond: 80,
-    periodMs: 12.5,
-    bufferSeconds: 36000,
-    refreshMs: 100,
+    samplesPerSecond: 100,
+    periodMs: 10,
+    bufferSeconds: 120,
+    refreshMs: 33,
+    minValidFrames: 10,
     plotMode: "normal",
     includeTimestamp: false,
-    minValidFrames: 1
+    includeSequenceCounter: false
   });
+  const [draftBasicConfig, setDraftBasicConfig] = useState({});
 
   const [advancedConfig, setAdvancedConfig] = useState({
     dataBits: 8,
@@ -705,6 +1216,23 @@ export default function App() {
     virtualFunctionsRef.current = virtualFunctions;
   }, [virtualFunctions]);
 
+  useEffect(() => {
+    latestPlotFpsRef.current = plotFps;
+  }, [plotFps]);
+
+  useEffect(() => {
+    if (!pendingChannelRefreshRef.current) {
+      latestChannelsRef.current = channels;
+    }
+  }, [channels]);
+
+  useEffect(() => () => {
+    if (uiFlushTimerRef.current) {
+      window.clearTimeout(uiFlushTimerRef.current);
+      uiFlushTimerRef.current = null;
+    }
+  }, []);
+
   const visibleChannels = useMemo(() => {
     if (basicConfig.channelCount <= 0) {
       return channels;
@@ -727,12 +1255,26 @@ export default function App() {
     [virtualFunctions]
   );
 
-  const allChannels = useMemo(() => [...visibleChannels, ...virtualChannels], [visibleChannels, virtualChannels]);
+  const sourceChannels = useMemo(() => visibleChannels, [visibleChannels]);
+  const allChannels = useMemo(() => [...sourceChannels, ...virtualChannels], [sourceChannels, virtualChannels]);
 
   const virtualFunctionSnapshotKey = useMemo(() =>
     JSON.stringify(virtualFunctions.map(({ value: _value, ...definition }) => definition)),
     [virtualFunctions]
   );
+
+  const serialThroughputEstimate = useMemo(() => {
+    const baud = Math.max(1, Number(baudRate) || 1);
+    const samplesPerSecond = Math.max(1, Number(basicConfig.samplesPerSecond) || 1);
+    const bytesPerSecond = baud / 10;
+    const bytesPerSample = bytesPerSecond / samplesPerSecond;
+    const bufferSamples = Math.max(1, Math.round((Number(basicConfig.bufferSeconds) || 1) * samplesPerSecond));
+    return {
+      bytesPerSecond,
+      bytesPerSample,
+      bufferSamples
+    };
+  }, [baudRate, basicConfig.bufferSeconds, basicConfig.samplesPerSecond]);
 
   const getChannelById = (channelId) => allChannels.find((channel) => channel.id === channelId);
 
@@ -742,6 +1284,24 @@ export default function App() {
     }
     if (isPhysicalChannelId(channelId)) {
       return sample.values?.[channelIndex(channelId)];
+    }
+    if (isSystemChannelId(channelId)) {
+      if (channelId === "sysSps") {
+        return sample.sysSps ?? sample.systemValues?.sysSps;
+      }
+      if (channelId === "sysFps") {
+        return sample.sysFps ?? sample.systemValues?.sysFps;
+      }
+      if (channelId === "sysSeqLost") {
+        return sample.sysSeqLost ?? sample.systemValues?.sysSeqLost;
+      }
+      if (channelId === "sysSeqGaps") {
+        return sample.sysSeqGaps ?? sample.systemValues?.sysSeqGaps;
+      }
+      if (channelId === "sysSeqLast") {
+        return sample.externalSequence ?? sample.sysSeqLast ?? sample.systemValues?.sysSeqLast;
+      }
+      return undefined;
     }
     return sample.virtualValues?.[channelId];
   };
@@ -814,6 +1374,53 @@ export default function App() {
     setMonitorLog((prev) => [...prev.slice(-399), message]);
   };
 
+  const flushPendingUiUpdates = () => {
+    uiFlushTimerRef.current = null;
+    lastUiFlushAtRef.current = performance.now();
+
+    if (rawLogQueueRef.current.length) {
+      const queuedLogs = rawLogQueueRef.current.splice(0);
+      const visibleLogs = queuedLogs.slice(-120);
+      setMonitorLog((prev) => [...prev, ...visibleLogs].slice(-400));
+    }
+
+    if (pendingChannelRefreshRef.current && latestChannelsRef.current.length) {
+      pendingChannelRefreshRef.current = false;
+      setChannels(latestChannelsRef.current);
+    }
+
+    if (pendingVirtualRefreshRef.current) {
+      pendingVirtualRefreshRef.current = false;
+      const latestVirtualValues = latestVirtualValuesRef.current;
+      setVirtualFunctions((prev) =>
+        prev.map((definition) => ({
+          ...definition,
+          value: Number.isFinite(latestVirtualValues[definition.id])
+            ? latestVirtualValues[definition.id]
+            : definition.value || 0
+        }))
+      );
+    }
+
+    setRxStats(latestRxStatsRef.current);
+
+    if (pendingDataRefreshRef.current) {
+      pendingDataRefreshRef.current = false;
+      setDataVersion((prev) => prev + 1);
+    }
+  };
+
+  const scheduleUiFlush = () => {
+    if (uiFlushTimerRef.current) {
+      return;
+    }
+
+    const refreshMs = Math.max(100, clamp(Number(basicConfig.refreshMs) || 100, 16, 1000));
+    const elapsedMs = performance.now() - lastUiFlushAtRef.current;
+    const delayMs = Math.max(0, refreshMs - elapsedMs);
+    uiFlushTimerRef.current = window.setTimeout(flushPendingUiUpdates, delayMs);
+  };
+
   const sessionLoggingEnabled = () =>
     Boolean(captureConfig.directory && captureConfig.label?.trim() && captureConfig.useSubfolder);
 
@@ -857,24 +1464,125 @@ export default function App() {
     }));
   };
 
-  const updateReceiveStats = (timestamp) => {
+  const extractFramePayload = (frame) => {
+    const frameValues = Array.isArray(frame.values) ? frame.values : [];
+    const frameNames = Array.isArray(frame.names) ? frame.names : [];
+    const hasNamedValues = frameNames.length === frameValues.length;
+    let sequenceIndex = hasNamedValues ? frameNames.findIndex(isSequenceFieldName) : -1;
+
+    if (sequenceIndex < 0 && (basicConfig.includeSequenceCounter || frame.includeSequenceCounter)) {
+      sequenceIndex = 0;
+    }
+
+    let timestampIndex = -1;
+    if (frame.includeTimestamp || basicConfig.includeTimestamp) {
+      timestampIndex = hasNamedValues
+        ? frameNames.findIndex((name, index) => index !== sequenceIndex && isTimestampFieldName(name))
+        : -1;
+      if (timestampIndex < 0) {
+        timestampIndex = sequenceIndex === 0 ? 1 : 0;
+      }
+    }
+
+    const values = [];
+    const names = [];
+    frameValues.forEach((value, index) => {
+      if (index === sequenceIndex || index === timestampIndex) {
+        return;
+      }
+      values.push(value);
+      if (hasNamedValues) {
+        names.push(frameNames[index]);
+      }
+    });
+
+    const rawSequence = sequenceIndex >= 0 ? Number(frameValues[sequenceIndex]) : Number.NaN;
+    const externalSequence = Number.isFinite(rawSequence) ? Math.trunc(rawSequence) : null;
+    const rawTimestamp = timestampIndex >= 0 ? Number(frameValues[timestampIndex]) : Number.NaN;
+
+    return {
+      values,
+      names: names.length ? names : undefined,
+      xValue: Number.isFinite(rawTimestamp) ? rawTimestamp : null,
+      externalSequence
+    };
+  };
+
+  const updateSequenceStats = (externalSequence) => {
+    if (!Number.isFinite(externalSequence)) {
+      return latestRxStatsRef.current;
+    }
+
+    const state = sequenceStatsRef.current;
+    if (state.last !== null) {
+      const delta = externalSequence - state.last;
+      if (delta > 1) {
+        const missing = delta - 1;
+        state.lost += missing;
+        state.gaps += 1;
+        rawLogQueueRef.current.push(`SYS > Hueco de secuencia: faltan ${missing} muestra(s), ${state.last} -> ${externalSequence}`);
+      } else if (delta <= 0) {
+        state.resets += 1;
+        rawLogQueueRef.current.push(`SYS > Secuencia reiniciada o repetida: ${state.last} -> ${externalSequence}`);
+      }
+      if (rawLogQueueRef.current.length > 500) {
+        rawLogQueueRef.current = rawLogQueueRef.current.slice(-500);
+      }
+    }
+
+    state.last = externalSequence;
+    const nextStats = {
+      ...latestRxStatsRef.current,
+      seqLost: state.lost,
+      seqGaps: state.gaps,
+      seqResets: state.resets,
+      seqLast: externalSequence
+    };
+    latestRxStatsRef.current = nextStats;
+    return nextStats;
+  };
+
+  const updateReceiveStats = (timestamp, frameCount) => {
     const now = Number(timestamp) || Date.now();
     const windowMs = 5000;
-    const times = [...rxTimesRef.current, now].filter((time) => now - time <= windowMs);
-    rxTimesRef.current = times;
-    const intervals = times.slice(1).map((time, index) => time - times[index]);
-    const avgMs = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
-    const jitterMs = intervals.length
-      ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - avgMs) ** 2, 0) / intervals.length)
+    const window = rxStatsWindowRef.current;
+    const previous = window.times[window.times.length - 1];
+    if (previous !== undefined) {
+      const interval = now - previous;
+      window.intervalSum += interval;
+      window.intervalSquareSum += interval * interval;
+    }
+    window.times.push(now);
+
+    while (window.head + 1 < window.times.length && now - window.times[window.head] > windowMs) {
+      const expiredInterval = window.times[window.head + 1] - window.times[window.head];
+      window.intervalSum -= expiredInterval;
+      window.intervalSquareSum -= expiredInterval * expiredInterval;
+      window.head += 1;
+    }
+    if (window.head > 8192 && window.head > window.times.length / 2) {
+      window.times = window.times.slice(window.head);
+      window.head = 0;
+    }
+
+    const sampleCount = window.times.length - window.head;
+    const intervalCount = Math.max(0, sampleCount - 1);
+    const avgMs = intervalCount ? window.intervalSum / intervalCount : 0;
+    const variance = intervalCount
+      ? Math.max(0, window.intervalSquareSum / intervalCount - avgMs * avgMs)
       : 0;
-    const spanSeconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 1;
-    setRxStats({
-      frames: historyRef.current.length + 1,
-      sps: times.length > 1 ? (times.length - 1) / Math.max(0.001, spanSeconds) : 0,
+    const jitterMs = Math.sqrt(variance);
+    const spanSeconds = intervalCount ? (now - window.times[window.head]) / 1000 : 1;
+    const nextStats = {
+      ...latestRxStatsRef.current,
+      frames: Math.max(0, Number(frameCount) || 0),
+      sps: intervalCount ? intervalCount / Math.max(0.001, spanSeconds) : 0,
       avgMs,
       jitterMs,
       lastFrameMs: Date.now() - now
-    });
+    };
+    latestRxStatsRef.current = nextStats;
+    return nextStats;
   };
 
   const closeContextMenu = () => {
@@ -886,6 +1594,9 @@ export default function App() {
   };
 
   const updateChannel = (channelId, patch) => {
+    latestChannelsRef.current = latestChannelsRef.current.map((channel) =>
+      channel.id === channelId ? { ...channel, ...patch } : channel
+    );
     setChannels((prev) =>
       prev.map((channel) => (channel.id === channelId ? { ...channel, ...patch } : channel))
     );
@@ -943,7 +1654,7 @@ export default function App() {
       windowValue: 200
     };
 
-    if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms"].includes(type)) {
+    if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(type)) {
       return baseWindow;
     }
     if (["abs", "sqrt", "round"].includes(type)) {
@@ -971,7 +1682,7 @@ export default function App() {
   };
 
   const getBlockChannelName = (sourceId) =>
-    visibleChannels.find((channel) => channel.id === sourceId)?.name || "variable";
+    sourceChannels.find((channel) => channel.id === sourceId)?.name || "variable";
 
   const blockToExpression = (block) => {
     if (!block) {
@@ -1022,7 +1733,7 @@ export default function App() {
       return Number.isFinite(Number(block.value)) ? "" : "Un bloque numérico tiene un valor inválido.";
     }
     if (block.type === "variable") {
-      return visibleChannels.some((channel) => channel.id === block.sourceId) ? "" : "Selecciona una variable física válida.";
+      return sourceChannels.some((channel) => channel.id === block.sourceId) ? "" : "Selecciona una variable válida.";
     }
     if (unaryExpressionFunctions[block.type]) {
       return validateFunctionBlock(block.input);
@@ -1030,8 +1741,8 @@ export default function App() {
     if (binaryBlockSymbols[block.type]) {
       return validateFunctionBlock(block.left) || validateFunctionBlock(block.right);
     }
-    if (!visibleChannels.some((channel) => channel.id === block.sourceId)) {
-      return "Selecciona una variable física válida.";
+    if (!sourceChannels.some((channel) => channel.id === block.sourceId)) {
+      return "Selecciona una variable válida.";
     }
     const operation = functionBlockOperations.find((item) => item.id === block.type);
     if (operation?.needsWindow && (!Number.isFinite(Number(block.windowValue)) || Number(block.windowValue) <= 0)) {
@@ -1044,18 +1755,42 @@ export default function App() {
     definition?.block ? blockToExpression(definition.block) : normalizeFunctionExpression(definition);
 
 
-  const getWindowValuesForChannel = (channelId, samples = historyRef.current, windowArg = null, definition = null) => {
-    const selectedSamples = samples.slice(-getFunctionWindowSize(definition || {}, windowArg));
-    return selectedSamples
-      .map((sample) => getSampleValue(sample, channelId))
-      .filter((value) => Number.isFinite(value));
+  const getWindowValuesForChannel = (channelId, samples = historyRef.current, windowArg = null, definition = null, endIndex = samples.length) => {
+    const end = endIndex;
+    const windowSize = getFunctionWindowSize(definition || {}, windowArg);
+    const start = Math.max(0, end - windowSize);
+    const result = [];
+    
+    const isPhysical = isPhysicalChannelId(channelId);
+    const physIndex = isPhysical ? channelIndex(channelId) : -1;
+    const isSystem = !isPhysical && isSystemChannelId(channelId);
+
+    for (let i = start; i < end; i++) {
+      const sample = samples[i];
+      if (!sample) {
+        continue;
+      }
+      let value;
+      if (isPhysical) {
+        value = sample.values?.[physIndex];
+      } else if (isSystem) {
+        value = getSampleValue(sample, channelId);
+      } else {
+        value = sample.virtualValues?.[channelId];
+      }
+      
+      if (Number.isFinite(value)) {
+        result.push(value);
+      }
+    }
+    return result;
   };
 
   const buildFunctionFormula = (definition) => {
     if (definition?.block) {
       return blockToExpression(definition.block);
     }
-    const source = visibleChannels.find((channel) => channel.id === definition.sourceId);
+    const source = sourceChannels.find((channel) => channel.id === definition.sourceId);
     const operation = virtualOperations.find((item) => item.id === definition.operation) || virtualOperations[0];
     const windowText = getFunctionWindowLabel(definition);
     return operation.formula(source?.name || "variable", windowText);
@@ -1080,7 +1815,7 @@ export default function App() {
 
   const expressionToJs = (definition) => {
     let expression = draftExpression(definition);
-    const channelsByName = new Map(visibleChannels.map((channel) => [channel.name, channel.id]));
+    const channelsByName = new Map(sourceChannels.map((channel) => [channel.name, channel.id]));
     expression = expression.replace(/\[([^\]]+)\]/g, (_match, name) => {
       const channelId = channelsByName.get(name.trim());
       if (!channelId) {
@@ -1099,7 +1834,7 @@ export default function App() {
 
     const expressionWithoutStrings = expression.replace(/"[^"]*"/g, "");
     const names = expressionWithoutStrings.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-    const allowedNames = new Set(["token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte"]);
+    const allowedNames = new Set(["token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", "errorPercen", "errorRela"]);
     const invalidName = names.find((name) => !allowedNames.has(name));
     if (invalidName) {
       throw new Error(`Función no permitida: ${invalidName}`);
@@ -1108,15 +1843,19 @@ export default function App() {
     return expression;
   };
 
-  const evaluateVirtualFunction = (definition, samples = historyRef.current) => {
+  const evaluateVirtualFunction = (definition, samples = historyRef.current, endIndex = samples.length) => {
     const expression = expressionToJs(definition);
-    const evaluator = new Function("token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", `"use strict"; return (${expression});`);
+    let evaluator = virtualFunctionEvaluatorCache.get(expression);
+    if (!evaluator) {
+      evaluator = new Function("token", "actual", "inicial", "min", "max", "prom", "abs", "sqrt", "round", "delta", "pend", "std", "rms", "gt", "lt", "gte", "lte", "errorPercen", "errorRela", `"use strict"; return (${expression});`);
+      virtualFunctionEvaluatorCache.set(expression, evaluator);
+    }
 
-    if (!samples.length) {
+    if (!samples.length || endIndex <= 0) {
       return undefined;
     }
 
-    const currentValue = (channelId) => getSampleValue(samples[samples.length - 1], channelId);
+    const currentValue = (channelId) => getSampleValue(samples[endIndex - 1], channelId);
     const token = (channelId) => ({
       channelId,
       valueOf: () => {
@@ -1132,7 +1871,7 @@ export default function App() {
         const value = Number(input);
         return Number.isFinite(value) ? [value] : [];
       }
-      return getWindowValuesForChannel(channelId, samples, windowArg, definition);
+      return getWindowValuesForChannel(channelId, samples, windowArg, definition, endIndex);
     };
     const actual = (input) => {
       const channelId = tokenId(input);
@@ -1188,40 +1927,83 @@ export default function App() {
     const lt = (left, right) => (Number(left) < Number(right) ? 1 : 0);
     const gte = (left, right) => (Number(left) >= Number(right) ? 1 : 0);
     const lte = (left, right) => (Number(left) <= Number(right) ? 1 : 0);
-    const result = evaluator(token, actual, inicial, min, max, prom, Math.abs, Math.sqrt, Math.round, delta, pend, std, rms, gt, lt, gte, lte);
+    const errorPercen = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (!values.length) {
+        return Number.NaN;
+      }
+      const maxVal = Math.max(...values);
+      const minVal = Math.min(...values);
+      return Math.abs((maxVal - minVal) / (maxVal || 1e-9)) * 100;
+    };
+    const errorRela = (input, windowArg) => {
+      const values = valuesFor(input, windowArg);
+      if (!values.length) {
+        return Number.NaN;
+      }
+      const maxVal = Math.max(...values);
+      const minVal = Math.min(...values);
+      return Math.abs((maxVal - minVal) / (maxVal || 1e-9));
+    };
+    const result = evaluator(token, actual, inicial, min, max, prom, Math.abs, Math.sqrt, Math.round, delta, pend, std, rms, gt, lt, gte, lte, errorPercen, errorRela);
     return Number.isFinite(Number(result)) ? Number(result) : undefined;
   };
 
-  const recomputeVirtualFunctionHistory = (definitions = virtualFunctionsRef.current) => {
-    const activeDefinitions = definitions.filter((definition) => definition.enabled !== false);
-    if (!historyRef.current.length) {
-      return {};
-    }
+  const recomputeVirtualFunctionHistoryAsync = (definitions = virtualFunctionsRef.current, token) => {
+    return new Promise((resolve) => {
+      const activeDefinitions = definitions.filter((definition) => definition.enabled !== false);
+      if (!historyRef.current.length) {
+        resolve({});
+        return;
+      }
 
-    if (!activeDefinitions.length) {
-      historyRef.current = historyRef.current.map((sample) => ({ ...sample, virtualValues: {} }));
-      return {};
-    }
+      if (!activeDefinitions.length) {
+        historyRef.current.replace(historyRef.current.map((sample) => ({ ...sample, virtualValues: undefined })));
+        rebuildLodFromHistory();
+        resolve({});
+        return;
+      }
 
-    const sourceHistory = historyRef.current;
-    const latestValues = {};
-    historyRef.current = sourceHistory.map((sample, index) => {
-      const samplesUntilNow = sourceHistory.slice(0, index + 1);
-      const virtualValues = {};
-      activeDefinitions.forEach((definition) => {
-        const value = evaluateVirtualFunction(definition, samplesUntilNow);
-        if (Number.isFinite(value)) {
-          const rounded = Number(value.toFixed(6));
-          virtualValues[definition.id] = rounded;
-          if (index === sourceHistory.length - 1) {
-            latestValues[definition.id] = rounded;
-          }
+      const sourceHistory = historyRef.current;
+      const latestValues = {};
+      const recomputedHistory = new Array(sourceHistory.length);
+
+      let i = 0;
+      const chunkSize = 500;
+
+      const processChunk = () => {
+        if (token !== window.__virtualFunctionRecomputeToken) {
+          resolve(null);
+          return;
         }
-      });
-      return { ...sample, virtualValues };
-    });
+        const end = Math.min(i + chunkSize, sourceHistory.length);
+        for (; i < end; i++) {
+          const sample = sourceHistory[i];
+          const virtualValues = {};
+          activeDefinitions.forEach((definition) => {
+            const value = evaluateVirtualFunction(definition, sourceHistory, i + 1);
+            if (Number.isFinite(value)) {
+              const rounded = Number(value.toFixed(6));
+              virtualValues[definition.id] = rounded;
+              if (i === sourceHistory.length - 1) {
+                latestValues[definition.id] = rounded;
+              }
+            }
+          });
+          recomputedHistory[i] = { ...sample, virtualValues };
+        }
 
-    return latestValues;
+        if (i < sourceHistory.length) {
+          setTimeout(processChunk, 0);
+        } else {
+          historyRef.current.replace(recomputedHistory);
+          rebuildLodFromHistory();
+          resolve(latestValues);
+        }
+      };
+
+      processChunk();
+    });
   };
 
   useEffect(() => {
@@ -1229,19 +2011,24 @@ export default function App() {
       return;
     }
 
-    const latestValues = recomputeVirtualFunctionHistory(virtualFunctionsRef.current);
-    setVirtualFunctions((prev) => {
-      if (!prev.length) {
-        return prev;
-      }
-      return prev.map((definition) => ({
-        ...definition,
-        value: Number.isFinite(latestValues[definition.id])
-          ? latestValues[definition.id]
-          : definition.value || 0
-      }));
+    window.__virtualFunctionRecomputeToken = (window.__virtualFunctionRecomputeToken || 0) + 1;
+    const currentToken = window.__virtualFunctionRecomputeToken;
+
+    recomputeVirtualFunctionHistoryAsync(virtualFunctionsRef.current, currentToken).then((latestValues) => {
+      if (!latestValues || currentToken !== window.__virtualFunctionRecomputeToken) return;
+      setVirtualFunctions((prev) => {
+        if (!prev.length) {
+          return prev;
+        }
+        return prev.map((definition) => ({
+          ...definition,
+          value: Number.isFinite(latestValues[definition.id])
+            ? latestValues[definition.id]
+            : definition.value || 0
+        }));
+      });
+      setDataVersion((prev) => prev + 1);
     });
-    setDataVersion((prev) => prev + 1);
   }, [virtualFunctionSnapshotKey]);
 
   const validateFunctionDraft = (draft = functionDraft) => {
@@ -1268,7 +2055,7 @@ export default function App() {
   };
 
   const openFunctionBuilder = (definition = null) => {
-    const firstSource = visibleChannels[0]?.id || "val0";
+    const firstSource = sourceChannels[0]?.id || "val0";
     const defaultBlock = createFunctionBlock("rangeAbs", firstSource);
     setFunctionDraft(definition ? {
       ...definition,
@@ -1452,9 +2239,9 @@ export default function App() {
 
 
   const getWheelUnits = (event) => {
-    const base = event.shiftKey ? 10 : 1;
-    const direction = event.deltaY < 0 ? 1 : -1;
-    return direction * base;
+    const intensity = event.deltaY / 100;
+    const base = event.shiftKey ? 5 : 1;
+    return -intensity * base;
   };
 
   const getPointerAxisZone = (event) => {
@@ -1490,7 +2277,7 @@ export default function App() {
         }
 
         if (enabled) {
-          return { ...plot, xMode: "auto" };
+          return { ...plot, xMode: "auto", xWindowOffset: 0 };
         }
 
         const auto = computeAxisAutoRange(plot, "x");
@@ -1509,9 +2296,247 @@ export default function App() {
   };
 
   const getSamplesForPlot = (plot) => {
-    const allSamples = historyRef.current;
+    const visibleBufferSamples = Math.max(
+      1,
+      Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
+    );
     const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
-    return plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+    const desiredSamples = plot.xMode === "window"
+      ? Math.min(visibleBufferSamples, sampleWindowSize)
+      : visibleBufferSamples;
+    const offsetSeconds = plot.xMode === "window" ? (Number(plot.xWindowOffset) || 0) : 0;
+    const offsetSamples = Math.floor(offsetSeconds * basicConfig.samplesPerSecond);
+    const endIdx = Math.max(0, historyRef.current.length - offsetSamples);
+    const startIdx = Math.max(0, endIdx - desiredSamples);
+    return createHistoryView(
+      historyRef.current,
+      startIdx,
+      endIdx
+    );
+  };
+
+  const appendSampleToLod = (sample, sequence) => {
+    const lod = lodBlocksRef.current;
+    let block = lod.current;
+    if (!block) {
+      block = { startSequence: sequence, endSequence: sequence, count: 0, extrema: {} };
+      lod.current = block;
+    }
+
+    const updateExtrema = (channelId, value) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const current = block.extrema[channelId];
+      if (!current) {
+        block.extrema[channelId] = { min: value, max: value, minSample: sample, maxSample: sample };
+        return;
+      }
+      if (value < current.min) {
+        current.min = value;
+        current.minSample = sample;
+      }
+      if (value > current.max) {
+        current.max = value;
+        current.maxSample = sample;
+      }
+    };
+
+    sample.values?.forEach((value, index) => updateExtrema(`val${index}`, value));
+    updateExtrema("sysSps", sample.sysSps ?? sample.systemValues?.sysSps);
+    updateExtrema("sysFps", sample.sysFps ?? sample.systemValues?.sysFps);
+    Object.entries(sample.virtualValues || {}).forEach(([channelId, value]) => updateExtrema(channelId, value));
+    block.endSequence = sequence;
+    block.count += 1;
+
+    if (block.count >= 64) {
+      appendCompletedLodBlock(lod, block);
+      lod.current = null;
+    }
+  };
+
+  const mergeLodBlocks = (left, right) => {
+    const extrema = {};
+    const channelIds = new Set([...Object.keys(left.extrema), ...Object.keys(right.extrema)]);
+    channelIds.forEach((channelId) => {
+      const leftExtrema = left.extrema[channelId];
+      const rightExtrema = right.extrema[channelId];
+      if (!leftExtrema) {
+        extrema[channelId] = rightExtrema;
+        return;
+      }
+      if (!rightExtrema) {
+        extrema[channelId] = leftExtrema;
+        return;
+      }
+      extrema[channelId] = {
+        min: Math.min(leftExtrema.min, rightExtrema.min),
+        max: Math.max(leftExtrema.max, rightExtrema.max),
+        minSample: leftExtrema.min <= rightExtrema.min ? leftExtrema.minSample : rightExtrema.minSample,
+        maxSample: leftExtrema.max >= rightExtrema.max ? leftExtrema.maxSample : rightExtrema.maxSample
+      };
+    });
+    return {
+      startSequence: left.startSequence,
+      endSequence: right.endSequence,
+      count: left.count + right.count,
+      extrema
+    };
+  };
+
+  const appendCompletedLodBlock = (lod, baseBlock) => {
+    let block = baseBlock;
+    let levelIndex = 0;
+    while (block) {
+      if (!lod.levels[levelIndex]) {
+        lod.levels[levelIndex] = { blocks: [], head: 0, pending: null };
+      }
+      const level = lod.levels[levelIndex];
+      level.blocks.push(block);
+      if (!level.pending) {
+        level.pending = block;
+        break;
+      }
+      block = mergeLodBlocks(level.pending, block);
+      level.pending = null;
+      levelIndex += 1;
+    }
+  };
+
+  const rebuildLodFromHistory = () => {
+    lodBlocksRef.current = { levels: [], current: null };
+    historyRef.current.forEach((sample, index) => {
+      const sequence = Number.isFinite(sample.sequence) ? sample.sequence : index + 1;
+      sample.sequence = sequence;
+      appendSampleToLod(sample, sequence);
+    });
+  };
+
+  const trimLodBefore = (oldestSequence) => {
+    const lod = lodBlocksRef.current;
+    lod.levels.forEach((level) => {
+      while (level.head < level.blocks.length && level.blocks[level.head].endSequence < oldestSequence) {
+        level.head += 1;
+      }
+      if (level.pending?.endSequence < oldestSequence) {
+        level.pending = null;
+      }
+      if (level.head > 1024 && level.head > level.blocks.length / 2) {
+        level.blocks = level.blocks.slice(level.head);
+        level.head = 0;
+      }
+    });
+  };
+
+  const getLodSamplesForPlot = (plot, rawSamples, width) => {
+    const channelIds = [...new Set(plot.assignments.map((assignment) => assignment.channelId))];
+    // Each LOD group emits Min + Max, so half a group per CSS pixel
+    // already provides roughly one drawable point per pixel and channel.
+    const targetGroups = Math.max(256, Math.ceil(width / 2));
+    const targetSamples = Math.max(2048, targetGroups * Math.max(1, channelIds.length) * 2);
+    if (rawSamples.length <= targetSamples) {
+      return rawSamples;
+    }
+
+    const firstSequence = rawSamples[0]?.sequence;
+    const lastSequence = rawSamples[rawSamples.length - 1]?.sequence;
+    if (!Number.isFinite(firstSequence) || !Number.isFinite(lastSequence)) {
+      return rawSamples;
+    }
+
+    const selected = new Map([
+      [firstSequence, rawSamples[0]],
+      [lastSequence, rawSamples[rawSamples.length - 1]]
+    ]);
+    const lod = lodBlocksRef.current;
+    const findRange = (level) => {
+      let low = level.head;
+      let high = level.blocks.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (level.blocks[middle].endSequence < firstSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      const start = low;
+      high = level.blocks.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (level.blocks[middle].startSequence <= lastSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      return { start, end: low, count: Math.max(0, low - start) };
+    };
+
+    let selectedLevel = lod.levels[0] || { blocks: [], head: 0 };
+    let selectedRange = findRange(selectedLevel);
+    for (let levelIndex = 1; levelIndex < lod.levels.length; levelIndex += 1) {
+      if (selectedRange.count <= targetGroups) {
+        break;
+      }
+      const candidateLevel = lod.levels[levelIndex];
+      const candidateRange = findRange(candidateLevel);
+      if (candidateRange.count > 0) {
+        selectedLevel = candidateLevel;
+        selectedRange = candidateRange;
+      }
+    }
+
+    const visibleBlocks = selectedLevel.blocks.slice(selectedRange.start, selectedRange.end);
+    const coveredEndSequence = visibleBlocks[visibleBlocks.length - 1]?.endSequence ?? firstSequence - 1;
+    const baseLevel = lod.levels[0];
+    if (baseLevel && selectedLevel !== baseLevel) {
+      const tailRange = findRange(baseLevel);
+      let low = tailRange.start;
+      let high = tailRange.end;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (baseLevel.blocks[middle].endSequence <= coveredEndSequence) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      for (let index = low; index < tailRange.end; index += 1) {
+        visibleBlocks.push(baseLevel.blocks[index]);
+      }
+    }
+    if (lod.current?.endSequence >= firstSequence && lod.current.startSequence <= lastSequence) {
+      visibleBlocks.push(lod.current);
+    }
+
+    const blocksPerGroup = Math.max(1, Math.ceil(visibleBlocks.length / targetGroups));
+    for (let groupStart = 0; groupStart < visibleBlocks.length; groupStart += blocksPerGroup) {
+      const groupEnd = Math.min(visibleBlocks.length, groupStart + blocksPerGroup);
+      channelIds.forEach((channelId) => {
+        let minValue = Number.POSITIVE_INFINITY;
+        let maxValue = Number.NEGATIVE_INFINITY;
+        let minSample = null;
+        let maxSample = null;
+        for (let index = groupStart; index < groupEnd; index += 1) {
+          const extrema = visibleBlocks[index].extrema[channelId];
+          if (extrema?.min < minValue) {
+            minValue = extrema.min;
+            minSample = extrema.minSample;
+          }
+          if (extrema?.max > maxValue) {
+            maxValue = extrema.max;
+            maxSample = extrema.maxSample;
+          }
+        }
+        [minSample, maxSample].forEach((candidate) => {
+          if (candidate?.sequence >= firstSequence && candidate.sequence <= lastSequence) {
+            selected.set(candidate.sequence, candidate);
+          }
+        });
+      });
+    }
+    return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
   };
 
   const getPlotXValue = (plot, sample, index) => {
@@ -1716,6 +2741,9 @@ export default function App() {
     event.stopPropagation();
 
     const units = getWheelUnits(event);
+    const rect = event.currentTarget.getBoundingClientRect();
+    const clientX = event.clientX;
+    const clientY = event.clientY;
 
     setPlots((prev) =>
       prev.map((candidate) => {
@@ -1725,47 +2753,49 @@ export default function App() {
 
         if (axisZone === "x") {
           const totalSeconds = Math.max(0.1, historyRef.current.length / Math.max(1, basicConfig.samplesPerSecond));
-          const currentSeconds = Math.max(0.1, Number(candidate.xWindowSize) || Math.min(10, totalSeconds));
-          const direction = units > 0 ? 1 : -1;
+          const currentSeconds = candidate.xMode === "auto" 
+            ? totalSeconds 
+            : Math.max(0.1, Number(candidate.xWindowSize) || Math.min(10, totalSeconds));
+          if (candidate.xMode === "window" || candidate.xMode === "auto") {
+            const currentOffset = Number(candidate.xWindowOffset) || 0;
+            const span = currentSeconds;
+            const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+            const safeSpan = Math.max(0.1, span * zoomFactor);
 
-          if (candidate.xMode === "window") {
-            const secondStep = event.shiftKey ? 10 : 1;
-            const nextSeconds = currentSeconds + direction * secondStep;
-            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
-            if (clamped >= totalSeconds - 1e-6) {
-              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
-            }
-            return {
-              ...candidate,
-              xWindowSize: Number(clamped.toFixed(3))
-            };
-          }
-          if (candidate.xMode === "auto") {
-            const secondStep = event.shiftKey ? 10 : 1;
-            const nextSeconds = currentSeconds + direction * secondStep;
-            const clamped = clamp(nextSeconds, 0.1, totalSeconds);
-            if (clamped >= totalSeconds - 1e-6) {
-              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)) };
+            const plotWidth = Math.max(1, rect.width - 148);
+            const relativeX = clamp((clientX - rect.left - 74) / plotWidth, 0, 1);
+            
+            const cursorOffset = currentOffset + span * (1 - relativeX);
+            let newOffset = cursorOffset - safeSpan * (1 - relativeX);
+            if (newOffset < 0) newOffset = 0;
+            
+            const clampedSpan = clamp(safeSpan, 0.1, totalSeconds);
+
+            if (newOffset === 0 && clampedSpan >= totalSeconds - 1e-6) {
+              return { ...candidate, xMode: "auto", xWindowSize: Number(totalSeconds.toFixed(3)), xWindowOffset: 0 };
             }
             return {
               ...candidate,
               xMode: "window",
-              xWindowSize: Number(clamped.toFixed(3))
+              xWindowSize: Number(clampedSpan.toFixed(3)),
+              xWindowOffset: Number(newOffset.toFixed(3))
             };
           }
           if (candidate.xMode === "manual") {
             const min = Number(candidate.xManualMin);
             const max = Number(candidate.xManualMax);
-            const center = (min + max) / 2;
             const span = Math.max(1e-6, max - min);
-            const scale = event.shiftKey
-              ? (direction > 0 ? 0.8 : 1.2)
-              : (direction > 0 ? 0.95 : 1.05);
-            const safeSpan = Math.max(1e-6, span * scale);
+            const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+            const safeSpan = Math.max(1e-6, span * zoomFactor);
+
+            const plotWidth = Math.max(1, rect.width - 148);
+            const relativeX = clamp((clientX - rect.left - 74) / plotWidth, 0, 1);
+            const cursorValue = min + span * relativeX;
+
             return {
               ...candidate,
-              xManualMin: Number((center - safeSpan / 2).toFixed(6)),
-              xManualMax: Number((center + safeSpan / 2).toFixed(6))
+              xManualMin: Number((cursorValue - safeSpan * relativeX).toFixed(6)),
+              xManualMax: Number((cursorValue + safeSpan * (1 - relativeX)).toFixed(6))
             };
           }
           return candidate;
@@ -1779,14 +2809,18 @@ export default function App() {
         const maxKey = `${axisZone}ManualMax`;
         const min = Number(candidate[minKey]);
         const max = Number(candidate[maxKey]);
-        const center = (min + max) / 2;
         const span = Math.max(1e-6, max - min);
-        const nextSpan = Math.max(1e-6, span - units * Math.max(span * 0.08, 0.02));
+        const zoomFactor = clamp(1 + units * 0.05, 0.05, 20);
+        const safeSpan = Math.max(1e-6, span * zoomFactor);
+
+        const plotHeight = Math.max(1, rect.height - 60);
+        const relativeY = clamp((clientY - rect.top - 20) / plotHeight, 0, 1);
+        const cursorValue = max - span * relativeY;
 
         return {
           ...candidate,
-          [minKey]: Number((center - nextSpan / 2).toFixed(6)),
-          [maxKey]: Number((center + nextSpan / 2).toFixed(6))
+          [minKey]: Number((cursorValue - safeSpan * (1 - relativeY)).toFixed(6)),
+          [maxKey]: Number((cursorValue + safeSpan * relativeY).toFixed(6))
         };
       })
     );
@@ -2000,6 +3034,31 @@ export default function App() {
     updateBasicConfig("samplesPerSecond", Number((1000 / periodMs).toFixed(2)));
   };
 
+  const applyEsp32Ch340HighSpeedProfile = () => {
+    setBaudRate(esp32Ch340HighSpeedProfile.baudRate);
+    setBasicConfig((prev) => ({
+      ...prev,
+      channelCount: esp32Ch340HighSpeedProfile.channelCount,
+      samplesPerSecond: esp32Ch340HighSpeedProfile.samplesPerSecond,
+      periodMs: esp32Ch340HighSpeedProfile.periodMs,
+      bufferSeconds: esp32Ch340HighSpeedProfile.bufferSeconds,
+      refreshMs: esp32Ch340HighSpeedProfile.refreshMs,
+      plotMode: esp32Ch340HighSpeedProfile.plotMode,
+      includeTimestamp: false,
+      includeSequenceCounter: esp32Ch340HighSpeedProfile.includeSequenceCounter,
+      minValidFrames: 1
+    }));
+    updateAppSettings({ serialTimeoutSeconds: esp32Ch340HighSpeedProfile.serialTimeoutSeconds });
+    setPlots((prev) =>
+      prev.map((plot) => ({
+        ...plot,
+        xMode: "window",
+        xWindowSize: esp32Ch340HighSpeedProfile.xWindowSize
+      }))
+    );
+    setConfigMessage("Perfil ESP32/CH340 aplicado: 921600 baud, 2 kSPS, secuencia al inicio, buffer 60 s y ploteo Min/Max.");
+  };
+
   const refreshPorts = async () => {
     try {
       const nextPorts = await window.jwSerial.listPorts();
@@ -2036,6 +3095,7 @@ export default function App() {
         expectedChannels: basicConfig.channelCount,
         minValidFrames: basicConfig.minValidFrames,
         includeTimestamp: basicConfig.includeTimestamp,
+        includeSequenceCounter: basicConfig.includeSequenceCounter,
         serialFilterMode: appSettings.serialFilterMode,
         serialFilterPatterns: appSettings.serialFilterPatterns
       });
@@ -2074,9 +3134,23 @@ export default function App() {
   };
 
   const clearBuffer = () => {
-    historyRef.current = [];
-    rxTimesRef.current = [];
-    setRxStats({ frames: 0, sps: 0, avgMs: 0, jitterMs: 0, lastFrameMs: null });
+    historyRef.current.clear();
+    lodBlocksRef.current = { levels: [], current: null };
+    rxStatsWindowRef.current = { times: [], head: 0, intervalSum: 0, intervalSquareSum: 0 };
+    sequenceStatsRef.current = { last: null, lost: 0, gaps: 0, resets: 0 };
+    totalFramesRef.current = 0;
+    latestRxStatsRef.current = createEmptyRxStats();
+    latestVirtualValuesRef.current = {};
+    rawLogQueueRef.current = [];
+    pendingDataRefreshRef.current = false;
+    pendingChannelRefreshRef.current = false;
+    pendingVirtualRefreshRef.current = false;
+    if (uiFlushTimerRef.current) {
+      window.clearTimeout(uiFlushTimerRef.current);
+      uiFlushTimerRef.current = null;
+    }
+    lastUiFlushAtRef.current = 0;
+    setRxStats(latestRxStatsRef.current);
     setDataVersion((prev) => prev + 1);
     setMonitorLog([]);
     setChannels((prev) => prev.map((channel) => ({ ...channel, value: 0 })));
@@ -2088,11 +3162,11 @@ export default function App() {
       return;
     }
 
-    const header = ["timestamp", "xValue", ...visibleChannels.map((channel) => channel.name), ...virtualChannels.map((channel) => channel.name)];
+    const header = ["timestamp", "xValue", ...sourceChannels.map((channel) => channel.name), ...virtualChannels.map((channel) => channel.name)];
     const rows = historyRef.current.map((item) => [
       item.timestamp,
       item.xValue,
-      ...visibleChannels.map((channel) => getSampleValue(item, channel.id) ?? ""),
+      ...sourceChannels.map((channel) => getSampleValue(item, channel.id) ?? ""),
       ...virtualChannels.map((channel) => getSampleValue(item, channel.id) ?? "")
     ]);
     const csv = [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
@@ -2665,15 +3739,15 @@ export default function App() {
 
   useEffect(() => {
     if (
-      !window.jwSerial?.onFrame ||
-      !window.jwSerial?.onRawLine ||
+      !window.jwSerial?.onFrames ||
+      !window.jwSerial?.onRawLines ||
       !window.jwSerial?.onStatus
     ) {
       appendLog("SYS > API serial no disponible en renderer (preload).");
       return undefined;
     }
 
-    const unsubscribeFrame = window.jwSerial.onFrame((frame) => {
+    const processFrame = (frame) => {
       if (!shouldAcceptSerialLine(frame.raw, appSettings.serialFilterMode, appSettings.serialFilterPatterns)) {
         return;
       }
@@ -2683,31 +3757,42 @@ export default function App() {
         return;
       }
 
-      const incomingValues = frame.values;
-      const xValue = frame.includeTimestamp ? frame.values[0] : null;
+      const payload = extractFramePayload(frame);
+      const incomingValues = payload.values;
+      const xValue = payload.xValue;
       const channelCount =
         basicConfig.channelCount > 0 ? basicConfig.channelCount : incomingValues.length;
 
-      setChannels((prev) => {
-        const normalized = normalizeChannels(channelCount, prev);
-        return normalized.map((channel, index) => ({
-          ...channel,
-          name: frame.names?.[index] || channel.name,
-          value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
-        }));
-      });
+      const normalizedChannels = normalizeChannels(channelCount, latestChannelsRef.current);
+      latestChannelsRef.current = normalizedChannels.map((channel, index) => ({
+        ...channel,
+        name: payload.names?.[index] || channel.name,
+        value: Number((incomingValues[index] ?? channel.value ?? 0).toFixed(2))
+      }));
+      pendingChannelRefreshRef.current = true;
 
       const maxSamples = Math.max(
         1,
         Math.floor(basicConfig.bufferSeconds * basicConfig.samplesPerSecond)
       );
+      totalFramesRef.current += 1;
+      const nextStats = updateReceiveStats(frame.timestamp, totalFramesRef.current);
+      const nextSequenceStats = updateSequenceStats(payload.externalSequence);
       const historyEntry = {
+        sequence: totalFramesRef.current,
+        externalSequence: payload.externalSequence,
         timestamp: frame.timestamp,
         xValue,
-        values: incomingValues.slice(0, channelCount),
-        virtualValues: {}
+        values: channelCount === incomingValues.length
+          ? incomingValues
+          : incomingValues.slice(0, channelCount),
+        sysSps: Number(nextStats.sps || 0),
+        sysFps: Number(latestPlotFpsRef.current || 0),
+        sysSeqLost: Number(nextSequenceStats.seqLost || 0),
+        sysSeqGaps: Number(nextSequenceStats.seqGaps || 0),
+        sysSeqLast: Number(nextSequenceStats.seqLast ?? Number.NaN)
       };
-      historyRef.current.push(historyEntry);
+      historyRef.current.push(historyEntry, maxSamples);
       const activeVirtualFunctions = virtualFunctionsRef.current;
       if (activeVirtualFunctions.length) {
         const nextVirtualValues = {};
@@ -2718,27 +3803,31 @@ export default function App() {
           }
         });
         historyEntry.virtualValues = nextVirtualValues;
-        setVirtualFunctions((prev) =>
-          prev.map((definition) => ({
-            ...definition,
-            value: Number.isFinite(nextVirtualValues[definition.id])
-              ? nextVirtualValues[definition.id]
-              : definition.value || 0
-          }))
-        );
+        latestVirtualValuesRef.current = nextVirtualValues;
+        pendingVirtualRefreshRef.current = true;
       }
-      updateReceiveStats(frame.timestamp);
-      if (historyRef.current.length > maxSamples) {
-        historyRef.current = historyRef.current.slice(-maxSamples);
+      appendSampleToLod(historyEntry, historyEntry.sequence);
+      if (historyRef.current.length >= maxSamples && historyEntry.sequence % 64 === 0) {
+        trimLodBefore(historyRef.current[0]?.sequence ?? 0);
       }
-      setDataVersion((prev) => prev + 1);
+      pendingDataRefreshRef.current = true;
+    };
+
+    const unsubscribeFrames = window.jwSerial.onFrames((frames) => {
+      frames.forEach(processFrame);
+      scheduleUiFlush();
     });
 
-    const unsubscribeRaw = window.jwSerial.onRawLine((line) => {
-      if (!line?.trim()) {
-        return;
+    const unsubscribeRawLines = window.jwSerial.onRawLines((lines) => {
+      lines.forEach((line) => {
+        if (line?.trim()) {
+          rawLogQueueRef.current.push(`RX > ${line}`);
+        }
+      });
+      if (rawLogQueueRef.current.length > 500) {
+        rawLogQueueRef.current = rawLogQueueRef.current.slice(-500);
       }
-      appendLog(`RX > ${line}`);
+      scheduleUiFlush();
     });
 
     const unsubscribeStatus = window.jwSerial.onStatus((status) => {
@@ -2757,8 +3846,8 @@ export default function App() {
     });
 
     return () => {
-      unsubscribeFrame?.();
-      unsubscribeRaw?.();
+      unsubscribeFrames?.();
+      unsubscribeRawLines?.();
       unsubscribeStatus?.();
     };
   }, [basicConfig, isPaused, appSettings.serialFilterMode, appSettings.serialFilterPatterns]);
@@ -2839,6 +3928,20 @@ export default function App() {
 
 
   useEffect(() => {
+    let previousCount = plotPaintCountRef.current;
+    let previousTime = performance.now();
+    const ticker = window.setInterval(() => {
+      const now = performance.now();
+      const count = plotPaintCountRef.current;
+      const elapsedSeconds = Math.max(0.001, (now - previousTime) / 1000);
+      setPlotFps(activeTab === "plotter" ? (count - previousCount) / elapsedSeconds : 0);
+      previousCount = count;
+      previousTime = now;
+    }, 1000);
+    return () => window.clearInterval(ticker);
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!axisDrag) {
       return undefined;
     }
@@ -2868,17 +3971,27 @@ export default function App() {
     };
   }, [plotResize]);
 
-  const renderPlot = (plot) => {
-    const allSamples = historyRef.current;
-    const sampleWindowSize = Math.max(2, Math.round((Number(plot.xWindowSize || 10) || 10) * basicConfig.samplesPerSecond));
-    const samples = plot.xMode === "window" ? allSamples.slice(-sampleWindowSize) : allSamples;
+  const renderPlot = (plot, plotIndex) => {
     const layoutHeight = clamp(plot.height || 320, 300, 720);
     const width = Math.max(520, plotWidths[plot.id] || 1200);
     const height = Math.max(180, layoutHeight - 88);
     const padding = { top: 20, right: 74, bottom: 40, left: 74 };
     const xTargetTicks = clamp(Math.floor((width - padding.left - padding.right) / 60), 6, 40);
+    const rawSamples = getSamplesForPlot(plot);
+    const samples = getLodSamplesForPlot(plot, rawSamples, width - padding.left - padding.right);
+    const firstRawSequence = rawSamples[0]?.sequence ?? 0;
 
-    const xValues = samples.map((sample, index) => getPlotXValue(plot, sample, index));
+    const xAssignment = plot.assignments.find((item) => item.axis === "x");
+    const xValues = samples.map((sample, index) => {
+      if (xAssignment) {
+        const value = getSampleValue(sample, xAssignment.channelId);
+        return Number.isFinite(value) ? value : index;
+      }
+      if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
+        return sample.xValue;
+      }
+      return Number.isFinite(sample.sequence) ? sample.sequence - firstRawSequence : index;
+    });
     const yScaleSamples = getVisibleSamplesForPlot(plot, samples);
 
     const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
@@ -2939,7 +4052,7 @@ export default function App() {
 
       const previous = y2FollowStateRef.current.get(plot.id);
       const referenceIntervals = Math.max(1, y1TicksData.ticks.length - 1);
-      const followStep = pickStep(y2Range.max - y2Range.min, referenceIntervals);
+      const followStep = pickYAxisStep(y2Range.max - y2Range.min, referenceIntervals);
       const followedTicks = makeYAxisTicksFollowingReference(y1TicksData, axisStats.y2, followStep || ownTicks.step || minStep, previous);
       y2FollowStateRef.current.set(plot.id, followedTicks.state);
       return {
@@ -3004,16 +4117,40 @@ export default function App() {
       max: Array.isArray(plot.statMaxTargets) ? plot.statMaxTargets : []
     };
 
-    const lines = hasRenderableData
-      ? yAssignments.map((assignment) => {
+    const getCanvasFrame = () => {
+      const latestRawSamples = getSamplesForPlot(plot);
+      const latestSamples = getLodSamplesForPlot(
+        plot,
+        latestRawSamples,
+        width - padding.left - padding.right
+      );
+      const latestFirstSequence = latestRawSamples[0]?.sequence ?? 0;
+      const latestXValues = latestSamples.map((sample, index) => {
+        if (xAssignment) {
+          const value = getSampleValue(sample, xAssignment.channelId);
+          return Number.isFinite(value) ? value : index;
+        }
+        if (basicConfig.includeTimestamp && sample.xValue !== null && sample.xValue !== undefined) {
+          return sample.xValue;
+        }
+        return Number.isFinite(sample.sequence) ? sample.sequence - latestFirstSequence : index;
+      });
+      const latestXRange = findFiniteRange(latestXValues);
+      const latestXTicks = plot.xMode === "manual"
+        ? xTicksData
+        : latestSamples.length >= 2 && latestXRange
+          ? makeXTicks(latestXRange.min, latestXRange.max, xTargetTicks)
+          : xTicksData;
+
+      const series = hasRenderableData ? yAssignments.map((assignment) => {
         const stats = assignment.axis === "y2" ? y2TicksData : y1TicksData;
         if (!Number.isFinite(stats.min) || !Number.isFinite(stats.max)) {
           return null;
         }
 
-        const path = buildSeries(
-          samples,
-          xValues,
+        const points = buildSeriesPoints(
+          latestSamples,
+          latestXValues,
           assignment.channelId,
           getSampleValue,
           stats.min,
@@ -3021,29 +4158,34 @@ export default function App() {
           height,
           width,
           padding,
-          xTicksData.min,
-          xTicksData.max
+          latestXTicks.min,
+          latestXTicks.max,
+          basicConfig.plotMode
         );
-        if (!path) {
+        if (points.length < 2) {
           return null;
         }
 
         const channel = getChannelById(assignment.channelId);
         const style = channel?.lineStyle || "solid";
         const thickness = Number(channel?.thickness || 2);
-        return (
-          <path
-            key={`${assignment.channelId}-${assignment.axis}`}
-            d={path}
-            fill="none"
-            stroke={channel?.color || "#2563eb"}
-            strokeWidth={Math.max(1, thickness)}
-            strokeDasharray={dashByStyle[style] || ""}
-            opacity="0.95"
-          />
-        );
-      }).filter(Boolean)
-      : [];
+        return {
+          key: `${assignment.channelId}-${assignment.axis}`,
+          points,
+          color: channel?.color || "#2563eb",
+          thickness: Math.max(1, thickness),
+          style
+        };
+      }).filter(Boolean) : [];
+
+      return {
+        series,
+        xTicks: latestXTicks,
+        y1Ticks: y1TicksData,
+        y2Ticks: y2TicksData,
+        theme: plotTheme
+      };
+    };
 
     const computeRollingStatSeries = (values, mode) => {
       if (mode === "avg") {
@@ -3184,6 +4326,7 @@ export default function App() {
         };
 
     return (
+      <>
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMinYMin meet">
         <defs>
           <clipPath id={plotClipId}>
@@ -3197,6 +4340,7 @@ export default function App() {
         </defs>
         <rect x="0" y="0" width={width} height={height} fill={plotTheme.background} />
         <line
+          visibility="hidden"
           x1={padding.left}
           y1={height - padding.bottom}
           x2={width - padding.right}
@@ -3205,6 +4349,7 @@ export default function App() {
           strokeWidth="1"
         />
         <line
+          visibility="hidden"
           x1={padding.left}
           y1={padding.top}
           x2={padding.left}
@@ -3213,6 +4358,7 @@ export default function App() {
           strokeWidth="1"
         />
         <line
+          visibility="hidden"
           x1={width - padding.right}
           y1={padding.top}
           x2={width - padding.right}
@@ -3259,6 +4405,7 @@ export default function App() {
           {xAutoEnabled ? <path d={`M ${padding.left - 16} ${height - padding.bottom + 20} L ${padding.left - 14} ${height - padding.bottom + 22} L ${padding.left - 10} ${height - padding.bottom + 17}`} stroke={plotTheme.check} strokeWidth="1.5" fill="none" /> : null}
         </g>
 
+        {false && <g>
         {xMinorTicks.map((tick) => {
           const x = xTickToPx(tick);
           return (
@@ -3369,8 +4516,8 @@ export default function App() {
             </text>
           );
         })}
+        </g>}
         <g clipPath={`url(#${plotClipId})`}>
-          {lines}
           {statCurves}
         </g>
         {!hasRenderableData ? (
@@ -3385,6 +4532,17 @@ export default function App() {
           </text>
         ) : null}
       </svg>
+      <PlotSeriesCanvas
+        width={width}
+        height={height}
+        padding={padding}
+        getFrame={getCanvasFrame}
+        refreshMs={basicConfig.refreshMs}
+        onPaint={plotIndex === 0 ? () => {
+          plotPaintCountRef.current += 1;
+        } : undefined}
+      />
+      </>
     );
   };
 
@@ -3420,7 +4578,9 @@ export default function App() {
         { type: "delta", label: "Delta", tone: "window" },
         { type: "slope", label: "Pend", tone: "window" },
         { type: "std", label: "Std", tone: "window" },
-        { type: "rms", label: "RMS", tone: "window" }
+        { type: "rms", label: "RMS", tone: "window" },
+        { type: "errorPercen", label: "Error%", tone: "window" },
+        { type: "errorRela", label: "Error_Rela", tone: "window" }
       ]
     },
     {
@@ -3468,6 +4628,9 @@ export default function App() {
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData(functionDragMime, encodedPayload);
     event.dataTransfer.setData("text/plain", `jwserial-function:${encodedPayload}`);
+    if (payload?.kind === "placed") {
+      event.dataTransfer.setData("jw-function-kind-placed", "1");
+    }
   };
 
   const readFunctionDragPayload = (event) => {
@@ -3487,8 +4650,8 @@ export default function App() {
   const allowFunctionDrop = (event) => {
     if (Array.from(event.dataTransfer.types).includes(functionDragMime)) {
       event.preventDefault();
-      const payload = readFunctionDragPayload(event);
-      event.dataTransfer.dropEffect = payload?.kind === "placed" ? "move" : "copy";
+      const isPlaced = Array.from(event.dataTransfer.types).includes("jw-function-kind-placed");
+      event.dataTransfer.dropEffect = isPlaced ? "move" : "copy";
     }
   };
 
@@ -3531,18 +4694,37 @@ export default function App() {
           const key = writePath[depth];
           return { ...node, [key]: writeNode(node[key], writePath, value, depth + 1) };
         };
+        
         const movedBlock = readNode(prev.block, payload.path);
+        const targetBlock = readNode(prev.block, path);
         if (!movedBlock) {
           return prev;
         }
-        const withoutSource = writeNode(prev.block, payload.path, null);
-        const nextBlock = writeNode(withoutSource, path, movedBlock);
+        
+        let nextBlock = prev.block;
+        nextBlock = writeNode(nextBlock, payload.path, targetBlock);
+        nextBlock = writeNode(nextBlock, path, movedBlock);
+
         return { ...prev, block: nextBlock, expression: nextBlock ? blockToExpression(nextBlock) : "" };
       });
       setFunctionMessage("");
       return;
     }
-    updateFunctionBlockAtPath(path, () => createFunctionBlockFromPayload(payload));
+    updateFunctionBlockAtPath(path, (oldNode) => {
+      const newBlock = createFunctionBlockFromPayload(payload);
+      if (oldNode && newBlock) {
+        if (binaryBlockSymbols[newBlock.type]) {
+          newBlock.left = oldNode;
+        } else if (unaryExpressionFunctions[newBlock.type]) {
+          newBlock.input = oldNode;
+        } else if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(newBlock.type)) {
+          if (oldNode.type === "variable" || oldNode.sourceId) {
+            newBlock.sourceId = oldNode.sourceId;
+          }
+        }
+      }
+      return newBlock;
+    });
   };
 
   const dropFunctionBlockToTrash = (event) => {
@@ -3576,7 +4758,21 @@ export default function App() {
       className={`function-palette__block function-palette__block--${item.tone || "operator"}`}
       draggable
       onDragStart={(event) => handleFunctionDragStart(event, item.kind ? item : { kind: "block", type: item.type })}
-      onDoubleClick={() => updateFunctionBlockAtPath([], () => createFunctionBlockFromPayload(item.kind ? item : { kind: "block", type: item.type }))}
+      onDoubleClick={() => updateFunctionBlockAtPath([], (oldNode) => {
+        const newBlock = createFunctionBlockFromPayload(item.kind ? item : { kind: "block", type: item.type });
+        if (oldNode && newBlock) {
+          if (binaryBlockSymbols[newBlock.type]) {
+            newBlock.left = oldNode;
+          } else if (unaryExpressionFunctions[newBlock.type]) {
+            newBlock.input = oldNode;
+          } else if (["current", "initial", "min", "max", "avg", "rangeAbs", "delta", "slope", "std", "rms", "errorPercen", "errorRela"].includes(newBlock.type)) {
+            if (oldNode.type === "variable" || oldNode.sourceId) {
+              newBlock.sourceId = oldNode.sourceId;
+            }
+          }
+        }
+        return newBlock;
+      })}
       title="Arrastra este bloque a una ranura"
     >
       {item.color ? <span className="function-palette__dot" style={{ background: item.color }} /> : null}
@@ -3588,10 +4784,11 @@ export default function App() {
     event.stopPropagation();
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData(functionDragMime, JSON.stringify({ kind: "placed", path }));
+    event.dataTransfer.setData("jw-function-kind-placed", "1");
   };
 
   const renderFunctionVariableSlot = (block, path) => {
-    const channel = visibleChannels.find((item) => item.id === block.sourceId) || null;
+    const channel = sourceChannels.find((item) => item.id === block.sourceId) || null;
     return (
       <span
         className={`function-slot ${channel ? "function-slot--variable" : "function-slot--empty"}`}
@@ -3643,7 +4840,7 @@ export default function App() {
     }
 
     if (block.type === "variable") {
-      const channel = visibleChannels.find((item) => item.id === block.sourceId) || visibleChannels[0];
+      const channel = sourceChannels.find((item) => item.id === block.sourceId) || sourceChannels[0];
       return (
         <span className="function-block function-block--variable" {...dragProps}>
           {channel ? <span className="function-palette__dot" style={{ background: channel.color }} /> : null}
@@ -3800,8 +4997,10 @@ export default function App() {
             </div>
             <div className="rx-stats">
               <span>{rxStats.sps.toFixed(1)} SPS</span>
-              <span>{rxStats.avgMs ? `${rxStats.avgMs.toFixed(1)} ms` : "-- ms"}</span>
-              <span>J {rxStats.jitterMs.toFixed(1)} ms</span>
+              <span>{plotFps.toFixed(1)} FPS</span>
+              <span>{Number(rxStats.seqLost || 0)} Perdidos</span>
+              <span>{Number(rxStats.seqGaps || 0)} Huecos seq</span>
+              <span>{Number(rxStats.seqLast ?? 0)} Último seq</span>
             </div>
           </section>
 
@@ -3826,6 +5025,8 @@ export default function App() {
               ))}
             </div>
           </section>
+
+
 
           <section className="sidebar__section">
             <div className="sidebar__section-title">
@@ -3942,7 +5143,7 @@ export default function App() {
 
         {activeTab === "plotter" ? (
           <div ref={plotsRef} className="plots" data-version={dataVersion} onWheelCapture={handlePlotterWheelCapture}>
-            {plots.map((plot) => {
+            {plots.map((plot, plotIndex) => {
               const draft = getDraft(plot.id);
               const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
               const legendEntries = plot.assignments.map((assignment) => {
@@ -3979,7 +5180,7 @@ export default function App() {
                     onDrop={(event) => handlePlotDrop(event, plot.id)}
                     data-plot-id={plot.id}
                   >
-                    {renderPlot(plot)}
+                    {renderPlot(plot, plotIndex)}
                     <div className="plot__legend-box">
                       <strong>Señales</strong>
                       {legendEntries.length === 0 ? (
@@ -4332,69 +5533,95 @@ export default function App() {
               {modal === "config" ? (
                 <div className="modal__form modal__section">
                   <h4>Básica</h4>
-                  <label>
-                    Canales por trama (0 = auto)
+
+                  {configMessage ? <p className="modal__hint">{configMessage}</p> : null}
+                  <div className="config-grid">
+                    <div className="config-grid__header">Parámetro</div>
+                    <div className="config-grid__header">Actual</div>
+                    <div className="config-grid__header">Editar</div>
+
+                    <div className="config-grid__label">Canales por trama (0 = auto)</div>
+                    <input type="text" readOnly value={basicConfig.channelCount} />
                     <input
                       type="number"
                       min="0"
-                      value={basicConfig.channelCount}
-                      onChange={(event) =>
-                        updateBasicConfig("channelCount", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.channelCount ?? basicConfig.channelCount}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, channelCount: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    SPS (muestras/seg)
+
+                    <div className="config-grid__label">SPS (muestras/seg)</div>
+                    <input type="text" readOnly value={basicConfig.samplesPerSecond} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.samplesPerSecond}
-                      onChange={(event) => handleSamplesChange(event.target.value)}
+                      value={draftBasicConfig.samplesPerSecond ?? basicConfig.samplesPerSecond}
+                      onChange={(event) => setDraftBasicConfig(prev => {
+                        const sps = Number(event.target.value);
+                        return {
+                          ...prev,
+                          samplesPerSecond: sps,
+                          periodMs: sps > 0 ? Number((1000 / sps).toFixed(2)) : prev.periodMs
+                        };
+                      })}
                     />
-                  </label>
-                  <label>
-                    Periodo (ms)
+
+                    <div className="config-grid__label">Periodo (ms)</div>
+                    <input type="text" readOnly value={basicConfig.periodMs} />
                     <input
                       type="number"
                       min="1"
                       step="0.1"
-                      value={basicConfig.periodMs}
-                      onChange={(event) => handlePeriodChange(event.target.value)}
+                      value={draftBasicConfig.periodMs ?? basicConfig.periodMs}
+                      onChange={(event) => setDraftBasicConfig(prev => {
+                        const period = Number(event.target.value);
+                        return {
+                          ...prev,
+                          periodMs: period,
+                          samplesPerSecond: period > 0 ? Number((1000 / period).toFixed(2)) : prev.samplesPerSecond
+                        };
+                      })}
                     />
-                  </label>
-                  <label>
-                    Buffer (segundos)
+
+                    <div className="config-grid__label">Buffer (segundos)</div>
+                    <input type="text" readOnly value={basicConfig.bufferSeconds} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.bufferSeconds}
-                      onChange={(event) =>
-                        updateBasicConfig("bufferSeconds", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.bufferSeconds ?? basicConfig.bufferSeconds}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, bufferSeconds: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    Refresh UI (ms)
+
+                    <div className="config-grid__label">Refresh UI (ms)</div>
+                    <input type="text" readOnly value={basicConfig.refreshMs} />
                     <input
                       type="number"
                       min="16"
-                      value={basicConfig.refreshMs}
-                      onChange={(event) =>
-                        updateBasicConfig("refreshMs", Number(event.target.value))
-                      }
+                      value={draftBasicConfig.refreshMs ?? basicConfig.refreshMs}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, refreshMs: Number(event.target.value) }))}
                     />
-                  </label>
-                  <label>
-                    Min. tramas válidas para iniciar
+
+                    <div className="config-grid__label">Min. tramas válidas para iniciar</div>
+                    <input type="text" readOnly value={basicConfig.minValidFrames} />
                     <input
                       type="number"
                       min="1"
-                      value={basicConfig.minValidFrames}
-                      onChange={(event) =>
-                        updateBasicConfig("minValidFrames", Math.max(1, Number(event.target.value) || 1))
-                      }
+                      value={draftBasicConfig.minValidFrames ?? basicConfig.minValidFrames}
+                      onChange={(event) => setDraftBasicConfig(prev => ({ ...prev, minValidFrames: Math.max(1, Number(event.target.value) || 1) }))}
                     />
-                  </label>
+                  </div>
+                  <div className="config-actions">
+                    <button type="button" onClick={() => {
+                      if (draftBasicConfig.channelCount !== undefined) updateBasicConfig("channelCount", draftBasicConfig.channelCount);
+                      if (draftBasicConfig.samplesPerSecond !== undefined) {
+                        handleSamplesChange(draftBasicConfig.samplesPerSecond);
+                      } else if (draftBasicConfig.periodMs !== undefined) {
+                        handlePeriodChange(draftBasicConfig.periodMs);
+                      }
+                      if (draftBasicConfig.bufferSeconds !== undefined) updateBasicConfig("bufferSeconds", draftBasicConfig.bufferSeconds);
+                      if (draftBasicConfig.refreshMs !== undefined) updateBasicConfig("refreshMs", draftBasicConfig.refreshMs);
+                      if (draftBasicConfig.minValidFrames !== undefined) updateBasicConfig("minValidFrames", draftBasicConfig.minValidFrames);
+                    }}>Aplicar cambios</button>
+                  </div>
                   <label>
                     Modo de ploteo
                     <select
@@ -4415,6 +5642,19 @@ export default function App() {
                     />
                     Incluye timestamp en X
                   </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(basicConfig.includeSequenceCounter)}
+                      onChange={(event) =>
+                        updateBasicConfig("includeSequenceCounter", event.target.checked)
+                      }
+                    />
+                    Incluye secuencia al inicio
+                  </label>
+                  <p className="modal__hint">
+                    CSV compacto: seq,valor0,valor1. En clave:valor se detecta automáticamente SEQ:123.
+                  </p>
                   <label>
                     Timeout sin trama válida (s)
                     <input
@@ -4677,7 +5917,7 @@ export default function App() {
                         <div className="function-palette__group">
                           <span>Variables</span>
                           <div className="function-palette__blocks">
-                            {visibleChannels.map((channel) => renderPaletteBlock({
+                            {sourceChannels.map((channel) => renderPaletteBlock({
                               kind: "variable",
                               sourceId: channel.id,
                               label: channel.name,
@@ -4950,6 +6190,15 @@ export default function App() {
             const channel = getChannelById(variableMenu.channelId);
             if (!channel) {
               return <span>No disponible</span>;
+            }
+            if (channel.system) {
+              return (
+                <>
+                  <span>{channel.name}</span>
+                  <span>{channel.value.toFixed(2)}</span>
+                  <button type="button" onClick={closeVariableMenu}>Cerrar</button>
+                </>
+              );
             }
             const updateChannelStyle = channel.virtual ? updateVirtualFunction : updateChannel;
 
