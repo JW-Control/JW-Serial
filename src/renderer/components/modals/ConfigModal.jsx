@@ -315,6 +315,18 @@ const ConfigModal = ({
         </select>
       </label>
       <label>
+        DTR/RTS al conectar
+        <select value={advancedConfig.lineSignals || "default"} onChange={(event) => onUpdateAdvanced({ lineSignals: event.target.value })}>
+          <option value="default">Por defecto del driver</option>
+          <option value="reset">Reinicio limpio (ESP32 / Arduino)</option>
+          <option value="release">Liberar líneas (no reiniciar)</option>
+        </select>
+      </label>
+      <p className="modal__hint">
+        En placas ESP32 con CH340/CP210x, DTR y RTS controlan el arranque. Si a veces conecta pero no llegan datos,
+        usa «Reinicio limpio»: la placa arranca siempre en modo normal al abrir el puerto.
+      </p>
+      <label>
         Stop bits
         <select value={advancedConfig.stopBits} onChange={(event) => onUpdateAdvanced({ stopBits: Number(event.target.value) })}>
           <option value={1}>1</option>

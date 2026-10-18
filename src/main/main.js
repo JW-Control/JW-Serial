@@ -30,6 +30,8 @@ let validFrameStreak = 0;
 let pendingFrames = [];
 let pendingRawLines = [];
 let droppedRawLines = 0;
+// Counters since the port was opened, used to explain connection timeouts.
+let linkStats = { bytes: 0, lines: 0, frames: 0 };
 let serialBatchTimer = null;
 let isQuitting = false;
 let portConfig = {
@@ -199,6 +201,7 @@ const pushRawLine = (line) => {
 
 const handleIncomingChunk = (chunk) => {
   const receivedAt = monotonicNow();
+  linkStats.bytes += chunk.length;
   readBuffer += chunk.toString("utf8");
 
   const lines = readBuffer.split(/\r?\n/);
@@ -211,6 +214,7 @@ const handleIncomingChunk = (chunk) => {
 
   for (const line of lines) {
     pushRawLine(line);
+    linkStats.lines += 1;
 
     if (!acceptLine(line)) {
       continue;
@@ -234,6 +238,7 @@ const handleIncomingChunk = (chunk) => {
 
     parsed.timestamp = receivedAt;
     pendingFrames.push(parsed);
+    linkStats.frames += 1;
   }
 
   if (lines.length) {
@@ -288,6 +293,34 @@ ipcMain.handle("serial:list", async () => {
   return listAllPorts();
 });
 
+const setSignals = (port, signals) =>
+  new Promise((resolve) => port.set(signals, () => resolve()));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * DTR/RTS handling right after opening. On ESP32 boards with the usual
+ * auto-reset circuit (CH340/CP210x), DTR drives GPIO0 and RTS drives EN.
+ * Windows raises both lines on open one after the other, which sometimes
+ * leaves the chip in reset or in bootloader mode (no data at all).
+ *  - "release": drop both lines (the board keeps running as it is).
+ *  - "reset":   clean reset into the application (esptool's hard reset):
+ *               GPIO0 high, EN low for 120 ms, then release.
+ *  - otherwise: leave the driver defaults.
+ */
+const applyLineSignals = async (port, mode) => {
+  try {
+    if (mode === "release") {
+      await setSignals(port, { dtr: false, rts: false });
+    } else if (mode === "reset") {
+      await setSignals(port, { dtr: false, rts: true });
+      await sleep(120);
+      await setSignals(port, { dtr: false, rts: false });
+    }
+  } catch (_error) {
+    // Some adapters do not support modem control lines.
+  }
+};
+
 ipcMain.handle("serial:open", async (_event, options) => {
   await cleanupPort();
   applyPortConfig(options);
@@ -311,6 +344,8 @@ ipcMain.handle("serial:open", async (_event, options) => {
   }
 
   activePort = port;
+  linkStats = { bytes: 0, lines: 0, frames: 0 };
+  await applyLineSignals(port, options.lineSignals);
   port.on("data", handleIncomingChunk);
   port.on("error", (error) => {
     emitToRenderer("serial:status", {
@@ -334,6 +369,8 @@ ipcMain.handle("serial:open", async (_event, options) => {
 
   return { ok: true };
 });
+
+ipcMain.handle("serial:link-stats", async () => ({ ...linkStats, open: Boolean(activePort?.isOpen) }));
 
 ipcMain.handle("serial:update-config", async (_event, options) => {
   applyPortConfig(options || {});

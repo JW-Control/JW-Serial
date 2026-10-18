@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("jwSerial", {
   listPorts: () => ipcRenderer.invoke("serial:list"),
   openPort: (options) => ipcRenderer.invoke("serial:open", options),
   updateSerialConfig: (options) => ipcRenderer.invoke("serial:update-config", options),
+  getLinkStats: () => ipcRenderer.invoke("serial:link-stats"),
   closePort: () => ipcRenderer.invoke("serial:close"),
   sendMessage: (message) => ipcRenderer.invoke("serial:send", message),
   saveConfigFile: (payload) => ipcRenderer.invoke("config:save-file", payload),

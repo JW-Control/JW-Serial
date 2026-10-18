@@ -46,6 +46,29 @@ import {
 
 const monotonicNow = () => performance.timeOrigin + performance.now();
 const ALARM_NOTICE_COOLDOWN_MS = 30000;
+// Boards that reset when the port opens (ESP32 auto-reset) need time to boot
+// before the first frame; added to the timeout only until data arrives.
+const FIRST_FRAME_GRACE_MS = 3000;
+
+/** Explains why no valid frame arrived, from the main-process counters. */
+const describeLinkProblem = (stats, baudRate) => {
+  if (!stats || stats.bytes === 0) {
+    return "No llegó ningún byte. Verifica que el equipo esté enviando y que sea el puerto correcto. "
+      + "Si es un ESP32 con CH340/CP210x, puede haber quedado en reset o en modo boot al abrir el puerto: "
+      + "usa Configuración → Avanzada → DTR/RTS → Reinicio limpio.";
+  }
+  if (stats.lines === 0) {
+    return `Llegaron ${stats.bytes} bytes sin saltos de línea: probablemente el baudrate (${baudRate}) no coincide con el del equipo.`;
+  }
+  return `Llegaron ${stats.lines} líneas pero ninguna fue una trama válida: revisa el formato, el filtro de tramas, `
+    + "\"Canales por trama\" y \"Min. tramas válidas\" (las líneas recibidas están en el monitor).";
+};
+
+/** Prefers USB serial adapters over legacy ports such as COM1. */
+const pickDefaultPort = (ports) =>
+  ports.find((port) => port.manufacturer && !/^COM1$/i.test(port.path))
+  || ports.find((port) => !/^COM1$/i.test(port.path))
+  || ports[0];
 
 const isMissingIpcHandlerError = (error) => String(error?.message || error || "").includes("No handler registered");
 
@@ -476,6 +499,7 @@ export default function App() {
       minValidFrames: 1
     }));
     updateAppSettings({ serialTimeoutSeconds: profile.serialTimeoutSeconds });
+    setAdvancedConfig((prev) => ({ ...prev, lineSignals: "reset" }));
     setPlots((prev) => prev.map((plot) => ({ ...plot, xMode: "window", xWindowSize: profile.xWindowSize, xWindowOffset: 0 })));
     setConfigMessage("Perfil ESP32/CH340 aplicado: 921600 baud, 2 kSPS, secuencia al inicio, buffer 60 s y ploteo Min/Max.");
   };
@@ -517,8 +541,8 @@ export default function App() {
     try {
       const nextPorts = await window.jwSerial.listPorts();
       setPorts(nextPorts);
-      if (!selectedPort && nextPorts.length > 0) {
-        setSelectedPort(nextPorts[0].path);
+      if (nextPorts.length > 0 && !nextPorts.some((port) => port.path === selectedPort)) {
+        setSelectedPort(pickDefaultPort(nextPorts).path);
       }
       engine.appendLog(nextPorts.length === 0
         ? "SYS > No se detectaron puertos. Puedes ingresar uno manualmente (ej: COM7)."
@@ -547,6 +571,7 @@ export default function App() {
         dataBits: advancedConfig.dataBits,
         parity: advancedConfig.parity,
         stopBits: advancedConfig.stopBits,
+        lineSignals: advancedConfig.lineSignals,
         expectedChannels: basicConfig.channelCount,
         minValidFrames: basicConfig.minValidFrames,
         includeTimestamp: basicConfig.includeTimestamp,
@@ -602,11 +627,23 @@ export default function App() {
       return undefined;
     }
     const watchdog = window.setInterval(async () => {
-      const lastActivity = Math.max(engine.lastFrameAt || 0, connectedAtRef.current || 0);
-      if (monotonicNow() - lastActivity < timeoutSeconds * 1000) {
+      const connectedAt = connectedAtRef.current || 0;
+      const hasFrame = (engine.lastFrameAt || 0) > connectedAt;
+      const lastActivity = hasFrame ? engine.lastFrameAt : connectedAt;
+      const allowedMs = timeoutSeconds * 1000 + (hasFrame ? 0 : FIRST_FRAME_GRACE_MS);
+      if (monotonicNow() - lastActivity < allowedMs) {
         return;
       }
-      engine.appendLog(`SYS > Timeout serial: ${timeoutSeconds} s sin trama válida. Desconectando.`);
+      let stats = null;
+      try {
+        stats = await window.jwSerial?.getLinkStats?.();
+      } catch (_error) {
+        // Diagnostics are optional.
+      }
+      engine.appendLog(`SYS > Timeout serial: ${Math.round(allowedMs / 1000)} s sin trama válida. Desconectando.`);
+      if (!hasFrame) {
+        engine.appendLog(`SYS > ${describeLinkProblem(stats, baudRate)}`);
+      }
       appendSessionEvent("timeout_disconnect", `${timeoutSeconds} s sin trama válida`);
       connectedAtRef.current = null;
       try {
@@ -617,7 +654,7 @@ export default function App() {
       setConnectionStatus("disconnected");
     }, 1000);
     return () => window.clearInterval(watchdog);
-  }, [engine, connectionStatus, appSettings.serialTimeoutSeconds, appendSessionEvent]);
+  }, [engine, connectionStatus, appSettings.serialTimeoutSeconds, appendSessionEvent, baudRate]);
 
   // -------------------------------------------------------------- data ops
 

@@ -55,7 +55,8 @@ export const defaultBasicConfig = {
 export const defaultAdvancedConfig = {
   dataBits: 8,
   parity: "none",
-  stopBits: 1
+  stopBits: 1,
+  lineSignals: "default"
 };
 
 export const defaultCaptureConfig = {
