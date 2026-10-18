@@ -117,6 +117,7 @@ export default function App() {
     fullScale: "",
     window: "hann",
     scale: "db",
+    frequencyScale: "log",
     autoRefresh: true
   });
   const [activeAlarmIds, setActiveAlarmIds] = useState([]);

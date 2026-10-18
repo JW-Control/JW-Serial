@@ -7,7 +7,7 @@ import { amplitudeSpectrum, histogram, noiseStatistics } from "../lib/spectrum.j
 const CHART_PADDING = { top: 16, right: 20, bottom: 40, left: 72 };
 
 /** Minimal 2D chart: line or bars with ticks, drawn on a canvas. */
-const drawChart = (canvas, { kind, xs, ys, overlay, xLabel, yLabel, color, theme }) => {
+const drawChart = (canvas, { kind, xs, ys, overlay, marker, logX = false, xLabel, yLabel, color, theme }) => {
   const rect = canvas.getBoundingClientRect();
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.max(1, Math.round(rect.width * ratio));
@@ -37,9 +37,12 @@ const drawChart = (canvas, { kind, xs, ys, overlay, xLabel, yLabel, color, theme
   if (!Number.isFinite(yMin)) {
     return;
   }
-  const xTicks = makeTicks(xs[0], xs[xs.length - 1], 8);
+  const xTicks = logX ? makeLogTicks(xs[0], xs[xs.length - 1]) : makeTicks(xs[0], xs[xs.length - 1], 8);
   const yTicks = makeTicks(yMin, yMax === yMin ? yMin + 1 : yMax, 6);
-  const toX = (value) => left + ((value - xTicks.min) / (xTicks.max - xTicks.min || 1)) * plotWidth;
+  const xScale = logX ? Math.log10 : (value) => value;
+  const xStart = xScale(xTicks.min);
+  const xSpan = xScale(xTicks.max) - xStart || 1;
+  const toX = (value) => left + ((xScale(value) - xStart) / xSpan) * plotWidth;
   const toY = (value) => top + plotHeight - ((value - yTicks.min) / (yTicks.max - yTicks.min || 1)) * plotHeight;
 
   context.font = "11px system-ui, sans-serif";
@@ -54,7 +57,7 @@ const drawChart = (canvas, { kind, xs, ys, overlay, xLabel, yLabel, color, theme
     context.moveTo(x, top);
     context.lineTo(x, top + plotHeight);
     context.stroke();
-    context.fillText(formatTick(tick, xTicks.step), x, top + plotHeight + 6);
+    context.fillText(logX ? formatReadout(tick) : formatTick(tick, xTicks.step), x, top + plotHeight + 6);
   });
   context.textAlign = "right";
   context.textBaseline = "middle";
@@ -92,17 +95,41 @@ const drawChart = (canvas, { kind, xs, ys, overlay, xLabel, yLabel, color, theme
     });
     context.globalAlpha = 1;
   } else {
+    // One vertical min/max segment per pixel column: tens of thousands of
+    // FFT bins stay cheap to draw and narrow peaks are never skipped.
     context.strokeStyle = color;
     context.lineWidth = 1.25;
     context.beginPath();
-    xs.forEach((x, index) => {
-      const y = toY(ys[index]);
-      if (index === 0) {
-        context.moveTo(toX(x), y);
+    let column = Number.NaN;
+    let columnMin = 0;
+    let columnMax = 0;
+    let started = false;
+    const flush = () => {
+      if (Number.isNaN(column)) {
+        return;
+      }
+      if (started) {
+        context.lineTo(column, columnMin);
       } else {
-        context.lineTo(toX(x), y);
+        context.moveTo(column, columnMin);
+        started = true;
+      }
+      context.lineTo(column, columnMax);
+    };
+    xs.forEach((x, index) => {
+      const px = Math.round(toX(x));
+      const y = toY(ys[index]);
+      if (px !== column) {
+        flush();
+        column = px;
+        columnMin = y;
+        columnMax = y;
+      } else {
+        columnMin = Math.min(columnMin, y);
+        columnMax = Math.max(columnMax, y);
       }
     });
+    flush();
     context.stroke();
   }
   if (overlay) {
@@ -120,7 +147,36 @@ const drawChart = (canvas, { kind, xs, ys, overlay, xLabel, yLabel, color, theme
     });
     context.stroke();
   }
+  if (marker) {
+    const x = toX(marker.x);
+    const y = toY(marker.y);
+    context.fillStyle = color;
+    context.beginPath();
+    context.arc(x, y, 4, 0, 2 * Math.PI);
+    context.fill();
+    context.fillStyle = theme.tick;
+    context.font = "600 11px system-ui, sans-serif";
+    context.textAlign = x > left + plotWidth - 140 ? "right" : "left";
+    context.textBaseline = "bottom";
+    context.fillText(marker.label, x + (context.textAlign === "left" ? 8 : -8), Math.max(top + 14, y - 4));
+  }
   context.restore();
+};
+
+/** Decade ticks (1, 2, 5 × 10^n) for a logarithmic axis. */
+const makeLogTicks = (minValue, maxValue) => {
+  const min = Math.max(minValue, 1e-12);
+  const max = Math.max(maxValue, min * 10);
+  const ticks = [];
+  for (let decade = Math.floor(Math.log10(min)); decade <= Math.ceil(Math.log10(max)); decade += 1) {
+    [1, 2, 5].forEach((factor) => {
+      const tick = factor * 10 ** decade;
+      if (tick >= min && tick <= max) {
+        ticks.push(tick);
+      }
+    });
+  }
+  return { ticks, min, max };
 };
 
 const Stat = ({ label, value, hint }) => (
@@ -190,14 +246,23 @@ const AnalysisView = ({ engine, channels, settings, onSettingsChange, theme }) =
     if (spectrumRef.current) {
       const spectrum = result?.spectrum;
       const useDb = settings.scale === "db";
+      const toDisplay = (value) => (useDb ? 20 * Math.log10(Math.max(value, 1e-15)) : value);
       const xs = spectrum ? Array.from(spectrum.frequencies).slice(1) : [];
       const ys = spectrum
-        ? Array.from(spectrum.amplitudes).slice(1).map((value) => (useDb ? 20 * Math.log10(Math.max(value, 1e-15)) : value))
+        ? Array.from(spectrum.amplitudes).slice(1).map(toDisplay)
         : [];
       drawChart(spectrumRef.current, {
         kind: "line",
         xs,
         ys,
+        logX: settings.frequencyScale === "log",
+        marker: spectrum?.peak
+          ? {
+              x: spectrum.peak.frequency,
+              y: toDisplay(spectrum.peak.amplitude),
+              label: `${formatReadout(spectrum.peak.frequency)} Hz · ${formatReadout(spectrum.peak.amplitude)}`
+            }
+          : null,
         xLabel: "Frecuencia (Hz)",
         yLabel: useDb ? "Amplitud (dB)" : "Amplitud",
         color,
@@ -228,7 +293,7 @@ const AnalysisView = ({ engine, channels, settings, onSettingsChange, theme }) =
         theme: colors
       });
     }
-  }, [result, settings.scale, channel, colors]);
+  }, [result, settings.scale, settings.frequencyScale, channel, colors]);
 
   const stats = result?.stats;
   return (
@@ -264,6 +329,13 @@ const AnalysisView = ({ engine, channels, settings, onSettingsChange, theme }) =
             <option value="linear">Lineal</option>
           </select>
         </label>
+        <label>
+          Frecuencia
+          <select value={settings.frequencyScale || "linear"} onChange={(event) => update({ frequencyScale: event.target.value })}>
+            <option value="linear">Lineal</option>
+            <option value="log">Logarítmica</option>
+          </select>
+        </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={settings.autoRefresh} onChange={(event) => update({ autoRefresh: event.target.checked })} />
           Actualizar cada 1 s
@@ -285,8 +357,8 @@ const AnalysisView = ({ engine, channels, settings, onSettingsChange, theme }) =
         <Stat label="Bits sin ruido" value={formatReadout(stats?.noiseFreeBits)} hint="log2(escala completa / ruido p-p)" />
         <Stat
           label="Pico FFT"
-          value={result?.spectrum ? `${formatReadout(result.spectrum.peak.frequency)} Hz` : "—"}
-          hint={result?.spectrum ? `Amplitud ${formatReadout(result.spectrum.peak.amplitude)} · resolución ${formatReadout(result.spectrum.resolution)} Hz · ${result.spectrum.size} puntos` : undefined}
+          value={result?.spectrum?.peak ? `${formatReadout(result.spectrum.peak.frequency)} Hz` : "—"}
+          hint={result?.spectrum?.peak ? `Amplitud ${formatReadout(result.spectrum.peak.amplitude)} · interpolado entre bins (bin ${formatReadout(result.spectrum.peak.binFrequency)} Hz, resolución ${formatReadout(result.spectrum.resolution)} Hz) · ${result.spectrum.size} puntos` : undefined}
         />
       </div>
 

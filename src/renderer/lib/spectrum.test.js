@@ -31,6 +31,24 @@ test("spectrum finds the tone frequency and amplitude", () => {
   assert.ok(spectrum.amplitudes[0] < 0.01, "mean removed (only window leakage remains)");
 });
 
+test("spectrum peak is interpolated between bins", () => {
+  // 1 Hz square-wave-like case from the field: 1 Hz at 2 kSPS with 32768
+  // points falls between bins (resolution 0.061 Hz).
+  const sampleRate = 2000;
+  for (const window of ["hann", "none"]) {
+    for (const frequency of [1, 5.03, 123.456]) {
+      const values = Array.from({ length: 40000 }, (_, index) => 3 * Math.sin((2 * Math.PI * frequency * index) / sampleRate));
+      const spectrum = amplitudeSpectrum(values, sampleRate, { window });
+      assert.ok(Math.abs(spectrum.peak.frequency - frequency) < spectrum.resolution / 50, `${window} ${frequency}: ${spectrum.peak.frequency}`);
+      assert.ok(Math.abs(spectrum.peak.amplitude - 3) < 0.03, `${window} ${frequency}: amplitude ${spectrum.peak.amplitude}`);
+    }
+  }
+});
+
+test("a constant signal reports no spectral peak", () => {
+  assert.equal(amplitudeSpectrum(new Array(1024).fill(2.5), 1000).peak, null);
+});
+
 test("noise statistics and ADC resolution figures", () => {
   // Alternating ±1 µV around 2.5 V: RMS 1 µV, p-p 2 µV.
   const values = Array.from({ length: 1000 }, (_, index) => 2.5 + (index % 2 ? 1e-6 : -1e-6));

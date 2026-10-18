@@ -34,7 +34,7 @@ let pendingFrames = [];
 let pendingRawLines = [];
 let droppedRawLines = 0;
 // Counters since the port was opened, used to explain connection timeouts.
-let linkStats = { bytes: 0, lines: 0, frames: 0, channelMismatch: null };
+let linkStats = { bytes: 0, lines: 0, frames: 0, rejected: 0, channelMismatch: null };
 let serialBatchTimer = null;
 let isQuitting = false;
 let portConfig = {
@@ -202,6 +202,23 @@ const pushRawLine = (line) => {
   pendingRawLines.push(line);
 };
 
+let lastRejectNoticeAt = 0;
+/**
+ * A data-looking line rejected mid-stream (garbled bytes, cut line) is the
+ * usual cause of "Perdidos": mark it in the monitor so it can be searched.
+ */
+const noteRejectedLine = (line) => {
+  if (!/^\s*[-+]?\.?\d/.test(line)) {
+    return; // Text such as "+INFO: ..." is expected, not corruption.
+  }
+  linkStats.rejected += 1;
+  const now = Date.now();
+  if (now - lastRejectNoticeAt >= 1000) {
+    lastRejectNoticeAt = now;
+    pushRawLine(`[JW-Serial] Trama descartada (total ${linkStats.rejected}): formato o número de valores inválido.`);
+  }
+};
+
 const handleIncomingChunk = (chunk) => {
   const receivedAt = monotonicNow();
   linkStats.bytes += chunk.length;
@@ -227,6 +244,8 @@ const handleIncomingChunk = (chunk) => {
     if (!parsed) {
       if (!streamStarted) {
         validFrameStreak = 0;
+      } else {
+        noteRejectedLine(line);
       }
       continue;
     }
@@ -237,6 +256,8 @@ const handleIncomingChunk = (chunk) => {
       linkStats.channelMismatch = { expected: portConfig.expectedChannels, received: dataValues };
       if (!streamStarted) {
         validFrameStreak = 0;
+      } else {
+        noteRejectedLine(line);
       }
       continue;
     }
@@ -358,7 +379,7 @@ ipcMain.handle("serial:open", async (_event, options) => {
   }
 
   activePort = port;
-  linkStats = { bytes: 0, lines: 0, frames: 0, channelMismatch: null };
+  linkStats = { bytes: 0, lines: 0, frames: 0, rejected: 0, channelMismatch: null };
   await applyLineSignals(port, options.lineSignals);
   port.on("data", handleIncomingChunk);
   port.on("error", (error) => {

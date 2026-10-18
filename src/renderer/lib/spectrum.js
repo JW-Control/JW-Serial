@@ -41,6 +41,33 @@ export const fft = (re, im) => {
 
 export const MAX_FFT_SIZE = 65536;
 
+const sinc = (x) => (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x));
+
+// Magnitude response of each window to a tone `offset` bins away from a
+// bin centre (1 at the centre); used to undo the scalloping loss.
+const windowResponse = (window, offset) =>
+  window === "hann" ? sinc(offset) / (1 - offset * offset) : sinc(offset);
+
+/**
+ * Refines the peak between bins from the ratio of the largest neighbour to
+ * the peak bin. For a single tone both formulas are exact (rectangular:
+ * a/(1+a); Hann: (2a-1)/(a+1)), so the frequency is not limited to the
+ * bin resolution and the amplitude is corrected for scalloping.
+ */
+const interpolatePeak = (amplitudes, index, window) => {
+  const center = amplitudes[index];
+  const left = amplitudes[index - 1] ?? 0;
+  const right = amplitudes[index + 1] ?? 0;
+  if (!(center > 0) || index <= 0 || index >= amplitudes.length - 1) {
+    return { offset: 0, amplitude: center };
+  }
+  const direction = right >= left ? 1 : -1;
+  const ratio = Math.min(1, (direction > 0 ? right : left) / center);
+  const magnitude = window === "hann" ? Math.max(0, (2 * ratio - 1) / (ratio + 1)) : ratio / (1 + ratio);
+  const offset = direction * Math.min(0.5, magnitude);
+  return { offset, amplitude: center / windowResponse(window, offset) };
+};
+
 /**
  * Single-sided amplitude spectrum of the last power-of-two block of
  * `values`, mean removed, optionally Hann windowed. Amplitudes are in the
@@ -61,7 +88,7 @@ export const amplitudeSpectrum = (values, sampleRate, { window = "hann" } = {}) 
   const im = new Float64Array(size);
   let windowSum = 0;
   for (let index = 0; index < size; index += 1) {
-    const weight = window === "hann" ? 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (size - 1)) : 1;
+    const weight = window === "hann" ? 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / size) : 1;
     windowSum += weight;
     re[index] = (values[offset + index] - mean) * weight;
   }
@@ -78,13 +105,22 @@ export const amplitudeSpectrum = (values, sampleRate, { window = "hann" } = {}) 
       peakIndex = index;
     }
   }
+  // A constant signal leaves only rounding noise: there is no tone to report.
+  const hasTone = amplitudes[peakIndex] > 1e-12 * Math.max(1, Math.abs(mean));
+  const refined = interpolatePeak(amplitudes, peakIndex, window);
   return {
     size,
     sampleRate,
     resolution: sampleRate / size,
     frequencies,
     amplitudes,
-    peak: { frequency: frequencies[peakIndex], amplitude: amplitudes[peakIndex] }
+    peak: hasTone
+      ? {
+          frequency: ((peakIndex + refined.offset) * sampleRate) / size,
+          amplitude: refined.amplitude,
+          binFrequency: frequencies[peakIndex]
+        }
+      : null
   };
 };
 
