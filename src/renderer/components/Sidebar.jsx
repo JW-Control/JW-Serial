@@ -220,7 +220,7 @@ const Sidebar = ({
               Configuración
             </button>
             <div className="actions__row actions__row--triple">
-              <button type="button" onClick={onTogglePause}>
+              <button type="button" onClick={onTogglePause} title="Atajo: barra espaciadora">
                 {isPaused ? "Reanudar" : "Pausar"}
               </button>
               <button type="button" onClick={onClear}>
@@ -230,7 +230,7 @@ const Sidebar = ({
                 CSV
               </button>
             </div>
-            <button type="button" onClick={() => onOpenModal("event")}>
+            <button type="button" onClick={() => onOpenModal("event")} title="Atajo: E">
               Evento
             </button>
             <div className="actions__row actions__row--capture">

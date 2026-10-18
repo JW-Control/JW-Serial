@@ -1,6 +1,15 @@
-import React, { memo, useCallback, useEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clamp } from "../lib/axisScale.js";
-import { computePlotFrame, isAxisEditable, PLOT_PADDING, plotThemes } from "../lib/plotFrame.js";
+import { computePlotFrame, CURSOR_COLORS, isAxisEditable, PLOT_PADDING, plotThemes } from "../lib/plotFrame.js";
+import {
+  anchorFromPx,
+  anchorToX,
+  computeHover,
+  computeMeasurement,
+  formatReadout,
+  isInsidePlotArea,
+  xToPx
+} from "../lib/plotOverlay.js";
 import { CHANNEL_DRAG_MIME } from "../constants.js";
 import PlotCanvas from "./PlotCanvas.jsx";
 import PlotContextMenu from "./PlotContextMenu.jsx";
@@ -64,18 +73,72 @@ const Plot = ({
   const canvasHeight = Math.max(180, layoutHeight - 88);
   const colors = plotThemes[theme] || plotThemes.light;
 
-  const inputsRef = useRef(null);
-  inputsRef.current = { plot, width: canvasWidth, height: canvasHeight, styles, includeTimestamp, plotMode, theme };
+  // Stable while nothing relevant changes, so hover/measurement re-renders do
+  // not force a full frame recomputation.
+  const inputs = useMemo(
+    () => ({ plot, width: canvasWidth, height: canvasHeight, styles, includeTimestamp, plotMode, theme }),
+    [plot, canvasWidth, canvasHeight, styles, includeTimestamp, plotMode, theme]
+  );
+  const inputsRef = useRef(inputs);
+  inputsRef.current = inputs;
 
-  const getFrame = useCallback(() => {
-    const inputs = inputsRef.current;
+  // Hover position and cursors live in a ref: moving the mouse only bumps
+  // `version`, which makes the canvas repaint without a React render.
+  const overlayRef = useRef({ hoverPx: null, cursors: { a: null, b: null }, version: 0 });
+  const measurementClockRef = useRef({ version: -1, at: 0 });
+  const [measureMode, setMeasureMode] = useState(false);
+  const [measurement, setMeasurement] = useState(null);
+  const [editingTitle, setEditingTitle] = useState(null);
+
+  const bumpOverlay = (patch) => {
+    Object.assign(overlayRef.current, patch);
+    overlayRef.current.version += 1;
+  };
+
+  const buildOverlay = (frame) => {
+    const { hoverPx, cursors } = overlayRef.current;
+    const cursorMarks = [];
+    ["a", "b"].forEach((key) => {
+      const x = anchorToX(frame, cursors[key]);
+      if (Number.isFinite(x) && x >= frame.xTicks.min && x <= frame.xTicks.max) {
+        cursorMarks.push({ px: xToPx(frame, x), color: CURSOR_COLORS[key], label: key.toUpperCase() });
+      }
+    });
+    return {
+      cursors: cursorMarks,
+      hover: hoverPx !== null && frame.hasData ? computeHover(engine, frame, hoverPx) : null
+    };
+  };
+
+  const getFrame = useCallback((now = performance.now()) => {
+    const currentInputs = inputsRef.current;
     const cache = frameCacheRef.current;
-    if (cache.frame && cache.inputs === inputs && cache.dataVersion === engine.dataVersion) {
-      return { frame: cache.frame, changed: false };
+    const overlayState = overlayRef.current;
+    let frame = cache.frame;
+    let changed = false;
+    if (!frame || cache.inputs !== currentInputs || cache.dataVersion !== engine.dataVersion) {
+      frame = computePlotFrame({ engine, ...currentInputs, memory: memoryRef.current });
+      frameCacheRef.current = { inputs: currentInputs, dataVersion: engine.dataVersion, frame, overlayVersion: -1 };
+      changed = true;
     }
-    const frame = computePlotFrame({ engine, ...inputs, memory: memoryRef.current });
-    frameCacheRef.current = { inputs, dataVersion: engine.dataVersion, frame };
-    return { frame, changed: true };
+    if (frameCacheRef.current.overlayVersion !== overlayState.version) {
+      changed = true;
+    }
+    if (changed) {
+      frame.overlay = buildOverlay(frame);
+      frameCacheRef.current.overlayVersion = overlayState.version;
+    }
+    // Measurements scan raw samples: refresh on cursor changes, and at most
+    // 4 times per second while data keeps arriving.
+    const { a, b } = overlayState.cursors;
+    const clock = measurementClockRef.current;
+    if (a && b && (clock.version !== overlayState.version || (changed && now - clock.at > 250))) {
+      measurementClockRef.current = { version: overlayState.version, at: now };
+      setMeasurement(computeMeasurement(engine, frame, a, b));
+    }
+    return { frame, changed };
+    // buildOverlay only reads refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine]);
 
   const autoRange = (axis) => {
@@ -219,6 +282,24 @@ const Plot = ({
     window.addEventListener("pointerup", stop);
   };
 
+  /** Pointer position in canvas coordinates. */
+  const toCanvasPoint = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      px: ((event.clientX - rect.left) * canvasWidth) / Math.max(1, rect.width),
+      py: event.clientY - rect.top
+    };
+  };
+
+  const plotPointFromEvent = (event) => {
+    const frame = frameCacheRef.current.frame;
+    if (!frame || getPointerAxisZone(event)) {
+      return null;
+    }
+    const point = toCanvasPoint(event);
+    return isInsidePlotArea(frame, point.px, point.py) ? { frame, ...point } : null;
+  };
+
   const handlePointerMove = (event) => {
     const axis = getPointerAxisZone(event);
     const activeAxis = axis && isAxisEditable(plot, axis) ? axis : null;
@@ -227,6 +308,11 @@ const Plot = ({
     }
     const drag = dragRef.current;
     if (!drag) {
+      const point = plotPointFromEvent(event);
+      const hoverPx = point ? point.px : null;
+      if (hoverPx !== overlayRef.current.hoverPx) {
+        bumpOverlay({ hoverPx });
+      }
       return;
     }
     const deltaX = event.clientX - drag.lastX;
@@ -262,6 +348,75 @@ const Plot = ({
         [maxKey]: Number((Number(current[maxKey]) + shift).toFixed(6))
       };
     });
+  };
+
+  const handlePlotClick = (event) => {
+    if (!measureMode) {
+      return;
+    }
+    const point = plotPointFromEvent(event);
+    if (!point) {
+      return;
+    }
+    const anchor = anchorFromPx(point.frame, point.px);
+    const { a, b } = overlayRef.current.cursors;
+    // First click sets A, second sets B, a third starts over from A.
+    bumpOverlay({ cursors: !a || b ? { a: anchor, b: null } : { a, b: anchor } });
+    if (!a || b) {
+      setMeasurement(null);
+    }
+  };
+
+  const handleDoubleClick = (event) => {
+    if (measureMode || !plotPointFromEvent(event)) {
+      return;
+    }
+    // Same as Better Serial Plotter: fit Y to the visible data.
+    onChange(plot.id, (current) => ({ ...current, y1Mode: "auto", y2Mode: "auto" }));
+  };
+
+  const clearCursors = () => {
+    bumpOverlay({ cursors: { a: null, b: null } });
+    setMeasurement(null);
+  };
+
+  const toggleMeasureMode = () => {
+    if (measureMode) {
+      clearCursors();
+    }
+    setMeasureMode(!measureMode);
+  };
+
+  const toggleHidden = (channelId) =>
+    onChange(plot.id, (current) => {
+      const hidden = new Set(current.hiddenChannels || []);
+      if (hidden.has(channelId)) {
+        hidden.delete(channelId);
+      } else {
+        hidden.add(channelId);
+      }
+      return { ...current, hiddenChannels: [...hidden] };
+    });
+
+  const commitTitle = () => {
+    const title = editingTitle?.trim();
+    if (title) {
+      onChange(plot.id, (current) => ({ ...current, title }));
+    }
+    setEditingTitle(null);
+  };
+
+  const copyMeasurement = () => {
+    if (!measurement) {
+      return;
+    }
+    const header = ["Señal", "A", "B", "ΔY", "Min", "Max", "Prom", "Std", "P-P", "N"].join("\t");
+    const rows = measurement.rows.map((row) =>
+      [row.name, row.valueA, row.valueB, row.delta, row.min, row.max, row.mean, row.std, row.peakToPeak, row.count]
+        .map((value) => (typeof value === "number" ? formatReadout(value) : value))
+        .join("\t"));
+    const summary = `ΔX\t${formatReadout(measurement.dx)}\tΔt (s)\t${formatReadout(measurement.dt)}`;
+    navigator.clipboard?.writeText([summary, header, ...rows].join("\n")).catch(() => {});
   };
 
   const handleDragOver = (event) => {
@@ -322,6 +477,7 @@ const Plot = ({
     return {
       key: `${assignment.channelId}-${assignment.axis}`,
       channelId: assignment.channelId,
+      hidden: (plot.hiddenChannels || []).includes(assignment.channelId),
       axis: assignment.axis.toUpperCase(),
       name: style?.name || assignment.channelId,
       color: style?.color || "#64748b"
@@ -337,9 +493,41 @@ const Plot = ({
     `axis-control-box ${isAxisEditable(plot, axis) ? "axis-control-box--editable" : ""} ${hoverAxis === axis ? "axis-control-box--active" : ""}`;
 
   return (
-    <section className="plot" ref={setSectionRef} style={{ height: `${plot.height || 320}px` }}>
+    <section
+      className="plot"
+      ref={setSectionRef}
+      style={measurement ? { minHeight: `${plot.height || 320}px` } : { height: `${plot.height || 320}px` }}
+    >
       <header className="plot__header">
-        <h3>{plot.title}</h3>
+        {editingTitle !== null ? (
+          <input
+            className="plot__title-input"
+            value={editingTitle}
+            autoFocus
+            onChange={(event) => setEditingTitle(event.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                commitTitle();
+              }
+              if (event.key === "Escape") {
+                setEditingTitle(null);
+              }
+            }}
+          />
+        ) : (
+          <h3 onDoubleClick={() => setEditingTitle(plot.title)} title="Doble clic para renombrar">{plot.title}</h3>
+        )}
+        <div className="plot__header-actions">
+          <button
+            type="button"
+            className={`plot__tool ${measureMode ? "plot__tool--active" : ""}`}
+            onClick={toggleMeasureMode}
+            title="Clic en el gráfico para colocar los cursores A y B"
+          >
+            {measureMode ? "Medición activa" : "Medir"}
+          </button>
+        </div>
       </header>
 
       <div
@@ -348,7 +536,14 @@ const Plot = ({
         onWheel={handleWheel}
         onPointerMove={handlePointerMove}
         onPointerDown={handlePointerDown}
-        onPointerLeave={() => setHoverAxis(null)}
+        onPointerLeave={() => {
+          setHoverAxis(null);
+          if (overlayRef.current.hoverPx !== null) {
+            bumpOverlay({ hoverPx: null });
+          }
+        }}
+        onClick={handlePlotClick}
+        onDoubleClick={handleDoubleClick}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -390,8 +585,13 @@ const Plot = ({
               <button
                 key={entry.key}
                 type="button"
-                className="plot__legend-row"
+                className={`plot__legend-row ${entry.hidden ? "plot__legend-row--hidden" : ""}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleHidden(entry.channelId);
+                }}
                 onContextMenu={(event) => onOpenVariableMenu(event, entry.channelId)}
+                title={entry.hidden ? "Clic para mostrar" : "Clic para ocultar"}
               >
                 <span className="plot__legend-dot" style={{ backgroundColor: entry.color }} />
                 <span>{entry.name}</span>
@@ -401,6 +601,49 @@ const Plot = ({
           )}
         </div>
       </div>
+
+      {measurement ? (
+        <div className="plot__measurement">
+          <div className="plot__measurement-header">
+            <strong>A → B</strong>
+            <span>ΔX {formatReadout(measurement.dx)}</span>
+            <span>Δt {formatReadout(measurement.dt)} s</span>
+            <span>{measurement.count} muestras</span>
+            <button type="button" onClick={copyMeasurement} title="Copiar como tabla">Copiar</button>
+            <button type="button" onClick={clearCursors} title="Quitar cursores">×</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Señal</th>
+                <th>A</th>
+                <th>B</th>
+                <th>ΔY</th>
+                <th>Min</th>
+                <th>Max</th>
+                <th>Prom</th>
+                <th>Std</th>
+                <th>P-P</th>
+              </tr>
+            </thead>
+            <tbody>
+              {measurement.rows.map((row) => (
+                <tr key={row.name}>
+                  <td><span className="plot__legend-dot" style={{ backgroundColor: row.color }} />{row.name}</td>
+                  <td>{formatReadout(row.valueA)}</td>
+                  <td>{formatReadout(row.valueB)}</td>
+                  <td>{formatReadout(row.delta)}</td>
+                  <td>{formatReadout(row.min)}</td>
+                  <td>{formatReadout(row.max)}</td>
+                  <td>{formatReadout(row.mean)}</td>
+                  <td>{formatReadout(row.std)}</td>
+                  <td>{formatReadout(row.peakToPeak)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       <div
         className="plot__resize-zone"

@@ -236,8 +236,10 @@ export class AcquisitionEngine {
     this.scheduleFlush();
   }
 
+  /** Queues a monitor line as `{ id, time, text }` (time = wall clock ms). */
   queueLog(line) {
-    this.logQueue.push(line);
+    this.logSequence = (this.logSequence || 0) + 1;
+    this.logQueue.push({ id: this.logSequence, time: Date.now(), text: line });
     if (this.logQueue.length > MAX_LOG_LINES) {
       this.logQueue.splice(0, this.logQueue.length - MAX_LOG_LINES);
     }

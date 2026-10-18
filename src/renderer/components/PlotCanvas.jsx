@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { clamp, formatTick, getStepDivisionBase, makeMinorTicks } from "../lib/axisScale.js";
+import { formatReadout } from "../lib/plotOverlay.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const LABEL_REFRESH_MS = 100;
@@ -9,6 +10,16 @@ const visibleTicks = (ticks) => ticks.ticks.filter(
 );
 
 const dashFor = (style) => (style === "dashed" ? [8, 4] : style === "dotted" ? [2, 4] : []);
+
+const roundRect = (context, x, y, width, height, radius) => {
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.arcTo(x + width, y, x + width, y + height, radius);
+  context.arcTo(x + width, y + height, x, y + height, radius);
+  context.arcTo(x, y + height, x, y, radius);
+  context.arcTo(x, y, x + width, y, radius);
+  context.closePath();
+};
 
 /**
  * Draws a plot on a canvas inside its own requestAnimationFrame loop, so data
@@ -61,6 +72,93 @@ const PlotCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) =>
       context.setLineDash([]);
       context.globalAlpha = 1;
       context.stroke();
+    };
+
+    const fillDots = (points, size) => {
+      const half = size / 2;
+      for (let index = 0; index < points.length; index += 2) {
+        context.fillRect(points[index] - half, points[index + 1] - half, size, size);
+      }
+    };
+
+    // Cursor lines, hover crosshair and tooltip (drawn above the series).
+    const paintOverlay = (overlay, theme, plotBottom) => {
+      if (!overlay) {
+        return;
+      }
+      context.save();
+      context.globalAlpha = 1;
+      context.font = "11px system-ui, sans-serif";
+      overlay.cursors.forEach(({ px, color, label }) => {
+        context.strokeStyle = color;
+        context.lineWidth = 1.5;
+        context.setLineDash([]);
+        context.beginPath();
+        context.moveTo(px, padding.top);
+        context.lineTo(px, plotBottom);
+        context.stroke();
+        context.fillStyle = color;
+        roundRect(context, px - 8, padding.top - 1, 16, 15, 3);
+        context.fill();
+        context.fillStyle = "#ffffff";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText(label, px, padding.top + 6.5);
+      });
+
+      const { hover } = overlay;
+      if (hover) {
+        context.strokeStyle = theme.crosshair;
+        context.lineWidth = 1;
+        context.setLineDash([3, 3]);
+        context.beginPath();
+        context.moveTo(hover.px, padding.top);
+        context.lineTo(hover.px, plotBottom);
+        context.stroke();
+        context.setLineDash([]);
+        hover.rows.forEach((row) => {
+          if (!Number.isFinite(row.py)) {
+            return;
+          }
+          context.fillStyle = row.color;
+          context.beginPath();
+          context.arc(hover.px, row.py, 3.5, 0, Math.PI * 2);
+          context.fill();
+        });
+
+        const lines = [{ text: `X: ${formatReadout(hover.x)}`, color: null }, ...hover.rows.map((row) => ({
+          text: `${row.name}: ${formatReadout(row.value)}`,
+          color: row.color
+        }))];
+        const lineHeight = 16;
+        const boxWidth = Math.max(...lines.map((line) => context.measureText(line.text).width)) + 28;
+        const boxHeight = lines.length * lineHeight + 10;
+        const plotRight = width - padding.right;
+        let boxX = hover.px + 12;
+        if (boxX + boxWidth > plotRight) {
+          boxX = hover.px - 12 - boxWidth;
+        }
+        const boxY = padding.top + 8;
+        context.fillStyle = theme.tooltipBg;
+        context.strokeStyle = theme.tooltipBorder;
+        roundRect(context, boxX, boxY, boxWidth, boxHeight, 6);
+        context.fill();
+        context.stroke();
+        context.textAlign = "left";
+        context.textBaseline = "middle";
+        lines.forEach((line, index) => {
+          const y = boxY + 5 + lineHeight * index + lineHeight / 2;
+          let textX = boxX + 10;
+          if (line.color) {
+            context.fillStyle = line.color;
+            context.fillRect(boxX + 10, y - 4, 8, 8);
+            textX += 14;
+          }
+          context.fillStyle = theme.tooltipText;
+          context.fillText(line.text, textX, y);
+        });
+      }
+      context.restore();
     };
 
     const strokePoints = (points) => {
@@ -125,7 +223,7 @@ const PlotCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) =>
     };
 
     const paint = (frame, now) => {
-      const { series, statSeries, xTicks, y1Ticks, y2Ticks, theme, hasData } = frame;
+      const { series, statSeries, xTicks, y1Ticks, y2Ticks, theme, hasAssignments, overlay } = frame;
       const plotRight = width - padding.right;
       const plotBottom = height - padding.bottom;
       const plotWidth = plotRight - padding.left;
@@ -205,15 +303,21 @@ const PlotCanvas = ({ width, height, padding, getFrame, refreshMs, onPaint }) =>
         strokePoints(points);
       });
       series.forEach(({ points, color, thickness, style }) => {
+        context.globalAlpha = 0.95;
+        if (style === "points") {
+          context.fillStyle = color;
+          fillDots(points, thickness + 1);
+          return;
+        }
         context.strokeStyle = color;
         context.lineWidth = thickness;
-        context.globalAlpha = 0.95;
         context.setLineDash(dashFor(style));
         strokePoints(points);
       });
       context.restore();
+      paintOverlay(overlay, theme, plotBottom);
 
-      if (!hasData) {
+      if (!hasAssignments) {
         context.globalAlpha = 1;
         context.fillStyle = theme.placeholder;
         context.font = "12px system-ui, sans-serif";

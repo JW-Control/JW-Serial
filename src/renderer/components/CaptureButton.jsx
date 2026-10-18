@@ -38,6 +38,7 @@ const CaptureButton = ({ captureConfig, isConnected, nextCaptureAt, onCapture })
     <button
       type="button"
       className="capture-status-button"
+      title="Atajo: C"
       style={{ "--capture-progress": `${progress * 100}%` }}
       onClick={() => onCapture()}
     >

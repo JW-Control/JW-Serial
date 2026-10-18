@@ -6,11 +6,15 @@ export const startChannelDrag = (event, channelId) => {
   event.dataTransfer.setData(CHANNEL_DRAG_MIME, channelId);
 };
 
-/** Latest value of a physical or virtual channel from an engine snapshot. */
+/** Latest value of a physical or virtual channel (NaN when unknown). */
+export const rawChannelValue = (snapshot, channelId) => {
+  const index = /^val(\d+)$/.exec(channelId)?.[1];
+  const value = index !== undefined ? snapshot.channelValues[Number(index)] : snapshot.virtualValues[channelId];
+  return Number.isFinite(value) ? value : Number.NaN;
+};
+
+/** Latest value for display lists (0 when unknown). */
 export const liveChannelValue = (snapshot, channel) => {
-  const index = /^val(\d+)$/.exec(channel.id)?.[1];
-  const value = index !== undefined
-    ? snapshot.channelValues[Number(index)]
-    : snapshot.virtualValues[channel.id];
+  const value = rawChannelValue(snapshot, channel.id);
   return Number.isFinite(value) ? value : 0;
 };

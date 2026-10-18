@@ -21,6 +21,11 @@ La aplicación combina un plotter en tiempo real, monitor serial, capturas PNG a
 - Asignación de señales por drag and drop hacia X, Y1 o Y2.
 - Menú contextual por gráfico para asignar, quitar y configurar señales rápidamente.
 - Ejes X, Y1 y Y2 con modo automático y manual.
+- Tooltip con el valor de cada señal bajo el mouse.
+- Modo **Medir**: cursores A/B con ΔX, Δt y, por señal, valores en cada cursor, ΔY, mínimo, máximo, promedio, desviación estándar y pico a pico (sobre las muestras originales; copiable como tabla).
+- Doble clic en el gráfico para autoajustar Y a lo visible; clic en la leyenda para ocultar o mostrar una señal; doble clic en el título para renombrar el plot.
+- Estilo de línea "Puntos" para gráficos de dispersión XY.
+- Vista **Panel** con valores grandes y mínimo/máximo de las variables elegidas.
 - Escalas canónicas para ejes y grillas legibles.
 - Autoescalado Y1/Y2 sobre el tramo visible cuando X está en modo manual.
 - Escala Y2 alineada visualmente con Y1 para evitar grillas superpuestas confusas.
@@ -157,6 +162,22 @@ Incluye:
 - Vista **Monitor**.
 - Botones para agregar o quitar plots.
 - Gráficos con título, leyenda, ejes, grilla y controles de escala.
+
+## Atajos de Teclado
+
+| Tecla | Acción |
+|---|---|
+| Espacio | Pausar / reanudar |
+| C | Capturar plots |
+| E | Registrar evento |
+| 1 / 2 / 3 | Plotter / Monitor / Panel |
+| Esc | Cerrar menús |
+
+Los atajos no se activan mientras escribes en un campo ni con un modal abierto.
+
+## Monitor
+
+El monitor muestra la hora de cada línea, permite buscar texto, pausar la vista sin detener la adquisición y desactivar el autoscroll (también se desactiva solo al desplazarte hacia arriba y se reactiva al volver al final).
 
 ## Plots y Asignación de Ejes
 

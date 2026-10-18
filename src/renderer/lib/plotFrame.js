@@ -19,6 +19,8 @@ import { buildLinePoints } from "./seriesPoints.js";
 
 export const PLOT_PADDING = { top: 20, right: 74, bottom: 40, left: 74 };
 
+export const CURSOR_COLORS = { a: "#f59e0b", b: "#10b981" };
+
 export const plotThemes = {
   dark: {
     background: "#0f172a",
@@ -29,6 +31,10 @@ export const plotThemes = {
     gridYMajor: "#334155",
     tick: "#cbd5e1",
     placeholder: "#94a3b8",
+    tooltipBg: "rgba(15, 23, 42, 0.94)",
+    tooltipBorder: "#475569",
+    tooltipText: "#e2e8f0",
+    crosshair: "#94a3b8",
     checkFill: "#111827",
     checkStroke: "#94a3b8",
     check: "#60a5fa"
@@ -42,6 +48,10 @@ export const plotThemes = {
     gridYMajor: "#bfdbfe",
     tick: "#64748b",
     placeholder: "#94a3b8",
+    tooltipBg: "rgba(255, 255, 255, 0.96)",
+    tooltipBorder: "#cbd5e1",
+    tooltipText: "#0f172a",
+    crosshair: "#64748b",
     checkFill: "#ffffff",
     checkStroke: "#64748b",
     check: "#2563eb"
@@ -101,7 +111,9 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
     xValues[index] = Number.isFinite(value) ? value : Number.NaN;
   }
 
-  const yAssignments = plot.assignments.filter((item) => item.axis !== "x");
+  const hidden = new Set(plot.hiddenChannels || []);
+  const yAssignments = plot.assignments.filter((item) => item.axis !== "x" && !hidden.has(item.channelId));
+  const hasAssignments = plot.assignments.some((item) => item.axis !== "x");
   const hasData = samples.length >= 2 && yAssignments.length > 0;
   const hasY1 = yAssignments.some((item) => item.axis === "y1");
   const hasY2 = yAssignments.some((item) => item.axis === "y2");
@@ -211,6 +223,7 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
       });
       if (points.length >= 4) {
         series.push({
+          channelId: assignment.channelId,
           points,
           color: style.color || "#2563eb",
           thickness: Math.max(1, Number(style.thickness) || 2),
@@ -245,7 +258,21 @@ export const computePlotFrame = ({ engine, plot, width, height, styles, includeT
     y2Ticks,
     theme: colors,
     hasData,
-    autoRanges: { x: xAutoRange, y1: y1Own, y2: y2Own }
+    hasAssignments,
+    autoRanges: { x: xAutoRange, y1: y1Own, y2: y2Own },
+    // Data needed by cursors, tooltips and measurements (see plotOverlay.js).
+    view,
+    samples,
+    xValues,
+    xOf,
+    xKind: xAssignment || includeTimestamp ? "value" : "index",
+    firstRawSequence,
+    yAssignments: yAssignments.map((assignment) => ({
+      ...assignment,
+      name: styles.get(assignment.channelId)?.name || assignment.channelId,
+      color: styles.get(assignment.channelId)?.color || "#2563eb"
+    })),
+    plotArea: { left: padding.left, top: padding.top, width: plotWidth, height: plotHeight }
   };
 };
 

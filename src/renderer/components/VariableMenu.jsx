@@ -32,6 +32,7 @@ const VariableMenu = ({ position, channel, onUpdate, onEditFunction, onDeleteFun
             <option value="solid">Sólida</option>
             <option value="dashed">Discontinua</option>
             <option value="dotted">Punteada</option>
+            <option value="points">Puntos (scatter)</option>
           </select>
         </label>
         <label>

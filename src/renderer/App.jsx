@@ -20,6 +20,7 @@ import { buildHistoryCsv } from "./lib/csv.js";
 import { readJson, readSettings, readString, removeKey, writeJson, writeString } from "./lib/storage.js";
 import { createFunctionBlock } from "./lib/virtual/definitions.js";
 import Monitor from "./components/Monitor.jsx";
+import ValuePanel from "./components/ValuePanel.jsx";
 import Plot from "./components/Plot.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import VariableMenu from "./components/VariableMenu.jsx";
@@ -65,6 +66,7 @@ export default function App() {
     return Number.isFinite(saved) && saved >= 760 ? saved : 920;
   });
   const [activeTab, setActiveTab] = useState("plotter");
+  const [panelChannels, setPanelChannels] = useState([]);
   const [modal, setModal] = useState(null);
   const [terminator, setTerminator] = useState("none");
   const [ports, setPorts] = useState([]);
@@ -254,6 +256,7 @@ export default function App() {
     manualPort,
     terminator,
     activeTab,
+    panelChannels,
     channels: channels.map(({ id, name, color, lineStyle, thickness }) => ({ id, name, color, lineStyle, thickness })),
     virtualFunctions: virtualFunctions.map(({ id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled }) => ({
       id, name, sourceId, operation, expression, block, windowUnit, windowValue, color, lineStyle, thickness, enabled
@@ -290,6 +293,9 @@ export default function App() {
     }
     if (parsed.activeTab) {
       setActiveTab(parsed.activeTab);
+    }
+    if (Array.isArray(parsed.panelChannels)) {
+      setPanelChannels(parsed.panelChannels);
     }
     if (parsed.plots) {
       setPlots(normalizePlots(parsed.plots));
@@ -331,7 +337,7 @@ export default function App() {
     if (restoreReadyRef.current) {
       writeJson(storageKeys.lastSession, buildConfigSnapshot());
     }
-  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
+  }, [basicConfig, advancedConfig, appSettings, baudRate, selectedPort, manualPort, terminator, activeTab, panelChannels, channels, virtualFunctions, plots, captureConfig, buildConfigSnapshot]);
 
   const loadLastSession = () => {
     try {
@@ -877,6 +883,40 @@ export default function App() {
     return () => element.removeEventListener("wheel", blockWheelScroll);
   }, [activeTab]);
 
+  // ------------------------------------------------------- keyboard shortcuts
+
+  const handleShortcut = useEvent((event) => {
+    const target = event.target;
+    const isTyping = target instanceof HTMLElement
+      && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+    if (event.key === "Escape") {
+      setContextMenu(null);
+      setVariableMenu(null);
+      return;
+    }
+    if (isTyping || event.ctrlKey || event.metaKey || event.altKey || modal) {
+      return;
+    }
+    const actions = {
+      " ": () => setIsPaused((prev) => !prev),
+      c: () => captureAllPlots(),
+      e: () => setModal("event"),
+      1: () => setActiveTab("plotter"),
+      2: () => setActiveTab("monitor"),
+      3: () => setActiveTab("panel")
+    };
+    const action = actions[event.key.toLowerCase()];
+    if (action) {
+      event.preventDefault();
+      action();
+    }
+  });
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [handleShortcut]);
+
   // ------------------------------------------------------------------ render
 
   const toggleTheme = useEvent(() => setTheme((prev) => (prev === "dark" ? "light" : "dark")));
@@ -929,11 +969,14 @@ export default function App() {
       <main className="main">
         <div className="main__toolbar">
           <div className="tabs">
-            <button type="button" className={`tab ${activeTab === "plotter" ? "tab--active" : ""}`} onClick={() => setActiveTab("plotter")}>
+            <button type="button" className={`tab ${activeTab === "plotter" ? "tab--active" : ""}`} onClick={() => setActiveTab("plotter")} title="Atajo: 1">
               Plotter
             </button>
-            <button type="button" className={`tab ${activeTab === "monitor" ? "tab--active" : ""}`} onClick={() => setActiveTab("monitor")}>
+            <button type="button" className={`tab ${activeTab === "monitor" ? "tab--active" : ""}`} onClick={() => setActiveTab("monitor")} title="Atajo: 2">
               Monitor
+            </button>
+            <button type="button" className={`tab ${activeTab === "panel" ? "tab--active" : ""}`} onClick={() => setActiveTab("panel")} title="Atajo: 3">
+              Panel
             </button>
           </div>
           <div className="plot-actions">
@@ -970,8 +1013,10 @@ export default function App() {
               />
             ))}
           </div>
-        ) : (
+        ) : activeTab === "monitor" ? (
           <Monitor engine={engine} terminator={terminator} onTerminatorChange={setTerminator} />
+        ) : (
+          <ValuePanel engine={engine} channels={allChannels} selectedIds={panelChannels} onSelectionChange={setPanelChannels} />
         )}
       </main>
 
