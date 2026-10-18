@@ -1,9 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("jwSerial", {
-  version: "0.1.0",
   listPorts: () => ipcRenderer.invoke("serial:list"),
   openPort: (options) => ipcRenderer.invoke("serial:open", options),
+  updateSerialConfig: (options) => ipcRenderer.invoke("serial:update-config", options),
   closePort: () => ipcRenderer.invoke("serial:close"),
   sendMessage: (message) => ipcRenderer.invoke("serial:send", message),
   saveConfigFile: (payload) => ipcRenderer.invoke("config:save-file", payload),

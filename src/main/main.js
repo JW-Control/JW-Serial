@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { SerialPort } from "serialport";
+import { countDataValues, createLineFilter, parseLine } from "../shared/serialProtocol.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,22 +16,43 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const devUrl = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 const appIconPath = path.join(__dirname, "../../build/icon.ico");
 
+const MAX_LINE_BUFFER_CHARS = 64 * 1024;
+const MAX_RAW_LINES_PER_BATCH = 400;
+const SERIAL_BATCH_MS = 16;
+
 let mainWindow = null;
 let activePort = null;
 let readBuffer = "";
 let validFrameStreak = 0;
 let pendingFrames = [];
 let pendingRawLines = [];
+let droppedRawLines = 0;
 let serialBatchTimer = null;
+let isQuitting = false;
 let portConfig = {
   expectedChannels: 0,
   minValidFrames: 1,
   includeTimestamp: false,
-  includeSequenceCounter: false,
-  serialFilterMode: "none",
-  serialFilterPatterns: ""
+  includeSequenceCounter: false
 };
+let acceptLine = () => true;
 const captureCounters = new Map();
+
+// Monotonic, sub-millisecond clock expressed as epoch milliseconds. Unlike
+// Date.now() it never jumps when the OS adjusts the wall clock.
+const monotonicNow = () => performance.timeOrigin + performance.now();
+
+const applyPortConfig = (options = {}) => {
+  portConfig = {
+    expectedChannels: Math.max(0, Number(options.expectedChannels ?? portConfig.expectedChannels) || 0),
+    minValidFrames: Math.max(1, Number(options.minValidFrames ?? portConfig.minValidFrames) || 1),
+    includeTimestamp: Boolean(options.includeTimestamp ?? portConfig.includeTimestamp),
+    includeSequenceCounter: Boolean(options.includeSequenceCounter ?? portConfig.includeSequenceCounter)
+  };
+  if ("serialFilterMode" in options || "serialFilterPatterns" in options) {
+    acceptLine = createLineFilter(options.serialFilterMode, options.serialFilterPatterns);
+  }
+};
 
 const emitToRenderer = (channel, payload) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -41,9 +63,10 @@ const emitToRenderer = (channel, payload) => {
 
 const flushSerialBatch = () => {
   serialBatchTimer = null;
-  if (pendingRawLines.length) {
-    emitToRenderer("serial:raw-lines", pendingRawLines);
+  if (pendingRawLines.length || droppedRawLines) {
+    emitToRenderer("serial:raw-lines", { lines: pendingRawLines, dropped: droppedRawLines });
     pendingRawLines = [];
+    droppedRawLines = 0;
   }
   if (pendingFrames.length) {
     emitToRenderer("serial:frames", pendingFrames);
@@ -53,131 +76,8 @@ const flushSerialBatch = () => {
 
 const scheduleSerialBatch = () => {
   if (!serialBatchTimer) {
-    serialBatchTimer = setTimeout(flushSerialBatch, 16);
+    serialBatchTimer = setTimeout(flushSerialBatch, SERIAL_BATCH_MS);
   }
-};
-
-const normalizeSerialFilterPatterns = (patterns) =>
-  String(patterns || "")
-    .split(/\r?\n/)
-    .map((pattern) => pattern.trim())
-    .filter(Boolean);
-
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const matchesSerialFilterPattern = (line, pattern) => {
-  if (!pattern) {
-    return false;
-  }
-
-  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
-    try {
-      return new RegExp(pattern.slice(1, -1)).test(line);
-    } catch (_error) {
-      return false;
-    }
-  }
-
-  if (pattern.includes("*")) {
-    const expression = pattern
-      .split("*")
-      .map(escapeRegExp)
-      .join(".*");
-    return new RegExp(expression).test(line);
-  }
-
-  return line.startsWith(pattern);
-};
-
-const shouldAcceptSerialLine = (line) => {
-  const mode = portConfig.serialFilterMode || "none";
-  const patterns = normalizeSerialFilterPatterns(portConfig.serialFilterPatterns);
-
-  if (mode === "none" || patterns.length === 0) {
-    return true;
-  }
-
-  const matches = patterns.some((pattern) => matchesSerialFilterPattern(line, pattern));
-  return mode === "accept" ? matches : !matches;
-};
-
-const normalizeFieldName = (name) =>
-  String(name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, "");
-
-const isSequenceFieldName = (name) =>
-  ["seq", "sequence", "sample", "sampleid", "frame", "frameid", "counter", "count", "n"].includes(normalizeFieldName(name));
-
-const isTimestampFieldName = (name) =>
-  ["t", "ts", "time", "timestamp", "millis", "ms"].includes(normalizeFieldName(name));
-
-const getParsedDataValueCount = (parsed) => {
-  if (!Array.isArray(parsed?.values)) {
-    return 0;
-  }
-
-  if (Array.isArray(parsed.names) && parsed.names.length === parsed.values.length) {
-    return parsed.values.filter((_value, index) => {
-      const name = parsed.names[index];
-      if (isSequenceFieldName(name)) {
-        return false;
-      }
-      if (portConfig.includeTimestamp && isTimestampFieldName(name)) {
-        return false;
-      }
-      return true;
-    }).length;
-  }
-
-  const metadataCount = Number(portConfig.includeSequenceCounter) + Number(portConfig.includeTimestamp);
-  return Math.max(0, parsed.values.length - metadataCount);
-};
-
-const parseLine = (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const keyValueChunks = trimmed
-    .split(/[,\t;]/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const keyValuePairs = keyValueChunks
-    .map((part) => part.match(/^([^:=,\t]+)\s*[:=]\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)$/i))
-    .filter(Boolean);
-
-  if (keyValuePairs.length > 0 && keyValuePairs.length === keyValueChunks.length) {
-    return {
-      delimiter: ",",
-      names: keyValuePairs.map((match) => match[1].trim()),
-      values: keyValuePairs.map((match) => Number(match[2])),
-      raw: trimmed
-    };
-  }
-
-  const delimiter = trimmed.includes("\t") ? "\t" : ",";
-  const chunks = trimmed
-    .split(delimiter)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-
-  if (chunks.length === 0) {
-    return null;
-  }
-
-  const values = chunks.map((part) => Number(part));
-  if (values.some((value) => Number.isNaN(value))) {
-    return null;
-  }
-
-  return {
-    delimiter,
-    values,
-    raw: trimmed
-  };
 };
 
 const parseWindowsPortNames = (text) => {
@@ -283,45 +183,54 @@ const buildCapturePath = (options) => {
   };
 };
 
+const pushRawLine = (line) => {
+  // The monitor only shows the most recent lines; cap the batch so a fast
+  // device cannot flood the IPC channel with text nobody will see.
+  if (pendingRawLines.length >= MAX_RAW_LINES_PER_BATCH) {
+    pendingRawLines.shift();
+    droppedRawLines += 1;
+  }
+  pendingRawLines.push(line);
+};
+
 const handleIncomingChunk = (chunk) => {
+  const receivedAt = monotonicNow();
   readBuffer += chunk.toString("utf8");
 
   const lines = readBuffer.split(/\r?\n/);
   readBuffer = lines.pop() || "";
+  if (readBuffer.length > MAX_LINE_BUFFER_CHARS) {
+    // A device that never sends a newline must not grow memory unbounded.
+    pushRawLine(`[JW-Serial] Línea descartada: más de ${MAX_LINE_BUFFER_CHARS} caracteres sin salto de línea.`);
+    readBuffer = "";
+  }
 
-  lines.forEach((line) => {
-    pendingRawLines.push(line);
+  for (const line of lines) {
+    pushRawLine(line);
 
-    if (!shouldAcceptSerialLine(line.trim())) {
-      return;
+    if (!acceptLine(line)) {
+      continue;
     }
 
     const parsed = parseLine(line);
     if (!parsed) {
       validFrameStreak = 0;
-      return;
+      continue;
     }
 
-    if (
-      portConfig.expectedChannels > 0 &&
-      getParsedDataValueCount(parsed) !== portConfig.expectedChannels
-    ) {
+    if (portConfig.expectedChannels > 0 && countDataValues(parsed, portConfig) !== portConfig.expectedChannels) {
       validFrameStreak = 0;
-      return;
+      continue;
     }
 
     validFrameStreak += 1;
     if (validFrameStreak < portConfig.minValidFrames) {
-      return;
+      continue;
     }
 
-    pendingFrames.push({
-      ...parsed,
-      timestamp: Date.now(),
-      includeTimestamp: portConfig.includeTimestamp,
-      includeSequenceCounter: portConfig.includeSequenceCounter
-    });
-  });
+    parsed.timestamp = receivedAt;
+    pendingFrames.push(parsed);
+  }
 
   if (lines.length) {
     scheduleSerialBatch();
@@ -333,6 +242,8 @@ const cleanupPort = async () => {
     clearTimeout(serialBatchTimer);
   }
   flushSerialBatch();
+  readBuffer = "";
+  validFrameStreak = 0;
   if (!activePort) {
     return;
   }
@@ -346,8 +257,6 @@ const cleanupPort = async () => {
   }
 
   activePort = null;
-  readBuffer = "";
-  validFrameStreak = 0;
 };
 
 const createWindow = () => {
@@ -357,6 +266,9 @@ const createWindow = () => {
     icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
       backgroundThrottling: false
     }
   });
@@ -374,17 +286,9 @@ ipcMain.handle("serial:list", async () => {
 
 ipcMain.handle("serial:open", async (_event, options) => {
   await cleanupPort();
+  applyPortConfig(options);
 
-  portConfig = {
-    expectedChannels: Number(options.expectedChannels || 0),
-    minValidFrames: Math.max(1, Number(options.minValidFrames || 1)),
-    includeTimestamp: Boolean(options.includeTimestamp),
-    includeSequenceCounter: Boolean(options.includeSequenceCounter),
-    serialFilterMode: options.serialFilterMode || "none",
-    serialFilterPatterns: options.serialFilterPatterns || ""
-  };
-
-  activePort = new SerialPort({
+  const port = new SerialPort({
     path: options.path,
     baudRate: options.baudRate,
     dataBits: options.dataBits,
@@ -393,28 +297,30 @@ ipcMain.handle("serial:open", async (_event, options) => {
     autoOpen: false
   });
 
-  activePort.on("data", handleIncomingChunk);
-  activePort.on("error", (error) => {
+  try {
+    await new Promise((resolve, reject) => {
+      port.open((error) => (error ? reject(error) : resolve()));
+    });
+  } catch (error) {
+    port.removeAllListeners();
+    return { ok: false, error: error?.message || String(error) };
+  }
+
+  activePort = port;
+  port.on("data", handleIncomingChunk);
+  port.on("error", (error) => {
     emitToRenderer("serial:status", {
       type: "error",
       message: error.message
     });
   });
-  activePort.on("close", () => {
-    emitToRenderer("serial:status", {
-      type: "closed",
-      message: "Puerto cerrado"
-    });
-  });
-
-  await new Promise((resolve, reject) => {
-    activePort.open((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
+  port.on("close", () => {
+    if (activePort === port) {
+      emitToRenderer("serial:status", {
+        type: "closed",
+        message: "Puerto cerrado"
+      });
+    }
   });
 
   emitToRenderer("serial:status", {
@@ -422,6 +328,11 @@ ipcMain.handle("serial:open", async (_event, options) => {
     message: `Conectado a ${options.path}`
   });
 
+  return { ok: true };
+});
+
+ipcMain.handle("serial:update-config", async (_event, options) => {
+  applyPortConfig(options || {});
   return { ok: true };
 });
 
@@ -594,8 +505,15 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", async () => {
-  await cleanupPort();
+app.on("before-quit", (event) => {
+  if (isQuitting || !activePort) {
+    return;
+  }
+  // Electron does not await async listeners: hold the quit until the port is
+  // closed so the OS handle is released cleanly.
+  event.preventDefault();
+  isQuitting = true;
+  cleanupPort().finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => {
