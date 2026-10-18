@@ -2,7 +2,7 @@
   "name": "jw-serial",
   "version": "1.2.0",
   "private": true,
-  "description": "Serial plotter MVP (Electron + React + Vite)",
+  "description": "Serial plotter (Electron + React + Vite)",
   "main": "src/main/main.js",
   "type": "module",
   "scripts": {
@@ -15,13 +15,13 @@
     "dist:setup:only": "npx --yes electron-builder --win nsis --x64 --publish never --config.win.target=nsis",
     "dist:portable:only": "npx --yes electron-builder --win portable --x64 --publish never --config.win.target=portable",
     "dist:portable": "npm run build:renderer && npm run dist:portable:only",
-    "dist": "npm run dist:win"
+    "dist": "npm run dist:win",
+    "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "serialport": "^12.0.0",
-    "uplot": "^1.6.30"
+    "serialport": "^12.0.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.11",
@@ -30,12 +30,13 @@
     "concurrently": "^9.0.1",
     "cross-env": "^7.0.3",
     "electron": "^31.4.0",
+    "electron-builder": "^24.13.3",
     "eslint": "^9.12.0",
     "eslint-plugin-react": "^7.37.1",
     "eslint-plugin-react-hooks": "^5.1.0",
-    "wait-on": "^7.2.0",
+    "globals": "^15.15.0",
     "vite": "^5.4.10",
-    "electron-builder": "^24.13.3"
+    "wait-on": "^7.2.0"
   },
   "build": {
     "appId": "com.jwserial.app",
@@ -46,6 +47,7 @@
     "files": [
       "dist/renderer/**/*",
       "src/main/**/*",
+      "src/shared/**/*",
       "build/icon.ico",
       "package.json"
     ],
