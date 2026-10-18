@@ -75,7 +75,12 @@ export const isAxisEditable = (plot, axis) => (axis === "x" ? true : plot[`${axi
 /** Samples covered by a plot's X mode (time-based, using sample timestamps). */
 export const getPlotView = (engine, plot) => {
   if (plot.xMode === "window") {
-    return engine.getView(Math.max(0.001, Number(plot.xWindowSize) || 10), Number(plot.xWindowOffset) || 0);
+    const windowSeconds = Math.max(0.001, Number(plot.xWindowSize) || 10);
+    // Never look past the oldest sample: after clearing the buffer (or with
+    // little data) a stale offset would otherwise leave the plot empty.
+    const maxOffset = Math.max(0, engine.getSpanSeconds() - windowSeconds);
+    const offsetSeconds = clamp(Number(plot.xWindowOffset) || 0, 0, maxOffset);
+    return engine.getView(windowSeconds, offsetSeconds);
   }
   return engine.getView();
 };

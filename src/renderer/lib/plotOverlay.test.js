@@ -57,3 +57,15 @@ test("readout formatting", () => {
   assert.equal(formatReadout(0.000012345), "1.2345e-5");
   assert.equal(formatReadout(Number.NaN), "—");
 });
+
+test("window view never points before the oldest sample", async () => {
+  const { getPlotView } = await import("./plotFrame.js");
+  const engine = new AcquisitionEngine();
+  engine.configure({ bufferSeconds: 100, samplesPerSecond: 100 });
+  // 2 s of data, but the plot window is 1 s wide with a stale 30 s offset.
+  engine.ingestFrames(Array.from({ length: 200 }, (_, index) => ({ values: [index], timestamp: 1000 + index * 10 })));
+  clearTimeout(engine.flushTimer);
+  const view = getPlotView(engine, { ...createPlot(1), xMode: "window", xWindowSize: 1, xWindowOffset: 30 });
+  assert.ok(view.length >= 99, `got ${view.length} samples`);
+  assert.equal(view.at(0).values[0], 0);
+});

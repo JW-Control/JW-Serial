@@ -658,7 +658,11 @@ export default function App() {
 
   // -------------------------------------------------------------- data ops
 
-  const clearBuffer = useEvent(() => engine.clear());
+  const clearBuffer = useEvent(() => {
+    engine.clear();
+    // Follow live data again after clearing (keeps each plot's zoom level).
+    setPlots((prev) => prev.map((plot) => (plot.xWindowOffset ? { ...plot, xWindowOffset: 0 } : plot)));
+  });
 
   const exportCsv = useEvent(() => {
     if (!engine.history.length) {
