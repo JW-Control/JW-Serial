@@ -64,6 +64,11 @@ const describeLinkProblem = (stats, baudRate) => {
   if (stats.lines === 0) {
     return `Llegaron ${stats.bytes} bytes sin saltos de línea: probablemente el baudrate (${baudRate}) no coincide con el del equipo.`;
   }
+  if (stats.channelMismatch) {
+    const { expected, received } = stats.channelMismatch;
+    return `Las tramas traen ${received} valores pero "Canales por trama" está en ${expected}. `
+      + `Cámbialo a 0 (auto) o a ${received} en Configuración → Básica (revisa también "Incluye secuencia/timestamp").`;
+  }
   return `Llegaron ${stats.lines} líneas pero ninguna fue una trama válida: revisa el formato, el filtro de tramas, `
     + "\"Canales por trama\" y \"Min. tramas válidas\" (las líneas recibidas están en el monitor).";
 };
@@ -644,7 +649,8 @@ export default function App() {
       } catch (_error) {
         // Diagnostics are optional.
       }
-      engine.appendLog(`SYS > Timeout serial: ${Math.round(allowedMs / 1000)} s sin trama válida. Desconectando.`);
+      const graceNote = hasFrame ? "" : ` (${timeoutSeconds} s + ${FIRST_FRAME_GRACE_MS / 1000} s de arranque)`;
+      engine.appendLog(`SYS > Timeout serial: ${Math.round(allowedMs / 1000)} s${graceNote} sin trama válida. Desconectando.`);
       if (!hasFrame) {
         engine.appendLog(`SYS > ${describeLinkProblem(stats, baudRate)}`);
       }

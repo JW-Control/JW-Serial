@@ -34,7 +34,7 @@ let pendingFrames = [];
 let pendingRawLines = [];
 let droppedRawLines = 0;
 // Counters since the port was opened, used to explain connection timeouts.
-let linkStats = { bytes: 0, lines: 0, frames: 0 };
+let linkStats = { bytes: 0, lines: 0, frames: 0, channelMismatch: null };
 let serialBatchTimer = null;
 let isQuitting = false;
 let portConfig = {
@@ -231,7 +231,10 @@ const handleIncomingChunk = (chunk) => {
       continue;
     }
 
-    if (portConfig.expectedChannels > 0 && countDataValues(parsed, portConfig) !== portConfig.expectedChannels) {
+    const dataValues = portConfig.expectedChannels > 0 ? countDataValues(parsed, portConfig) : 0;
+    if (portConfig.expectedChannels > 0 && dataValues !== portConfig.expectedChannels) {
+      // Remembered so a timeout can say "expected 2, received 5".
+      linkStats.channelMismatch = { expected: portConfig.expectedChannels, received: dataValues };
       if (!streamStarted) {
         validFrameStreak = 0;
       }
@@ -355,7 +358,7 @@ ipcMain.handle("serial:open", async (_event, options) => {
   }
 
   activePort = port;
-  linkStats = { bytes: 0, lines: 0, frames: 0 };
+  linkStats = { bytes: 0, lines: 0, frames: 0, channelMismatch: null };
   await applyLineSignals(port, options.lineSignals);
   port.on("data", handleIncomingChunk);
   port.on("error", (error) => {
