@@ -133,9 +133,11 @@ Incluye:
 - Puerto y baudrate.
 - Botones de conexión.
 - Métricas de recepción:
-  - SPS calculados por el software.
-  - Tiempo promedio entre muestras.
-  - Jitter aproximado.
+  - SPS medidos por el software (últimos 5 s).
+  - FPS de dibujo del plotter.
+  - Periodo promedio entre muestras.
+  - Jitter del periodo (requiere timestamp del dispositivo).
+  - Muestras perdidas, huecos y último valor del contador de secuencia.
 - Lista de variables detectadas.
 - Acciones rápidas:
   - Configuración.
@@ -309,6 +311,17 @@ Ese cálculo genera una variable virtual con la diferencia absoluta entre el má
 
 Las funciones recalculan el historial completo disponible, por lo que si creas una función después de haber adquirido datos, JW-Serial completa la curva desde el inicio del registro siempre que existan muestras suficientes.
 
+Funciones de ventana disponibles: `actual`, `inicial`, `min`, `max`, `prom`, `|Max-Min|`, `delta`, `pend`, `std`, `rms`, `errorPercen` y `errorRela`, además de `abs`, `sqrt`, `round`, los operadores `+ - * / ^` y las comparaciones `> < >= <=` (devuelven 1 o 0).
+
+Detalles de cálculo:
+
+- Las ventanas en **segundos** usan el tiempo real de llegada de cada muestra (no el SPS configurado). Las ventanas en **muestras** (`m`) usan las últimas N muestras.
+- `pend` en una ventana de segundos devuelve unidades por segundo reales (diferencia entre la primera y la última muestra dividida entre el tiempo transcurrido entre ellas).
+- `std` es la desviación estándar poblacional (divide entre N).
+- Los cálculos son incrementales: el costo por muestra no depende del largo de la ventana, por lo que una ventana de 200 s a 2 kSPS no frena la adquisición.
+- Los valores se guardan con precisión completa (no se redondean), útil para señales de microvoltios.
+- Las funciones creadas con bloques referencian las variables por su identificador interno: renombrar una variable no rompe la función.
+
 ## Plantillas
 
 Las plantillas guardan configuraciones reutilizables dentro de la app.
@@ -381,6 +394,13 @@ Compilar renderer:
 npm run build
 ```
 
+Pruebas unitarias y lint:
+
+```bash
+npm test
+npm run lint
+```
+
 Generar instalador y portable para Windows:
 
 ```bash
@@ -392,6 +412,25 @@ Los archivos generados se ubican en:
 ```text
 release/
 ```
+
+### Arquitectura
+
+```text
+src/
+  main/main.js            Proceso principal: puerto serial, parseo y filtro de tramas,
+                          lotes IPC cada 16 ms, archivos (capturas, session_log, JSON).
+  main/preload.cjs        API `window.jwSerial` expuesta al renderer.
+  shared/serialProtocol.js  Parser y filtros compartidos por main y renderer.
+  renderer/
+    engine/               Motor de adquisición fuera de React: historial circular,
+                          LOD, métricas de recepción y funciones virtuales.
+    lib/                  Lógica pura: escalas de ejes, cálculo de cada cuadro del plot,
+                          ventanas deslizantes, compilador de fórmulas, capturas PNG.
+    components/           Interfaz: Plot (canvas propio), Sidebar, Monitor y modales.
+    App.jsx               Estado de configuración y composición.
+```
+
+Los datos nunca pasan por el estado de React: cada plot dibuja en su propio ciclo `requestAnimationFrame` leyendo el motor, y solo los textos en vivo (valores, SPS, monitor) se suscriben a un resumen que se actualiza como máximo cada `Refresh` ms. La interfaz solo se vuelve a renderizar cuando el usuario interactúa.
 
 ## Licencia
 
